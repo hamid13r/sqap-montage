@@ -239,7 +239,10 @@ def fill(config):
         )
         sys.exit(1)
 
-    from square_aperture_montage.remove_gaps import process_image, _process_with_gpu
+    from square_aperture_montage.remove_gaps import (
+        process_image, _process_with_gpu,
+        DEFAULT_DETECT_KERNELS, DEFAULT_DILATE_KERNELS, _parse_kernels,
+    )
 
     cfg      = load_config(config)
     f        = cfg.get('fill', {})
@@ -253,6 +256,10 @@ def fill(config):
     sigma      = float(f.get('sigma',  5.0))
     tile_num   = int(f.get('tile_num', 8))
 
+    # Kernels: accept [[H, W], ...] from YAML or fall back to coded defaults
+    detect_kernels = _parse_kernels(f.get('detect_kernels', DEFAULT_DETECT_KERNELS))
+    dilate_kernels = _parse_kernels(f.get('dilate_kernels', DEFAULT_DILATE_KERNELS))
+
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(mask_dir,   exist_ok=True)
 
@@ -262,11 +269,14 @@ def fill(config):
         sys.exit(1)
 
     click.echo(f"Found {len(image_list)} images to process.")
+    click.echo(f"  detect_kernels: {detect_kernels}")
+    click.echo(f"  dilate_kernels: {dilate_kernels}")
 
     if gpus.strip().lower() == 'cpu' or not torch.cuda.is_available():
         device = torch.device('cpu')
         for img in tqdm(image_list, desc="Filling gaps"):
-            process_image(img, output_dir, mask_dir, device, resume, sigma, tile_num)
+            process_image(img, output_dir, mask_dir, device, resume, sigma, tile_num,
+                          detect_kernels=detect_kernels, dilate_kernels=dilate_kernels)
         click.echo("Fill done.")
         return
 
@@ -276,7 +286,8 @@ def fill(config):
 
     click.echo(f"Using GPUs: {gpu_ids}")
     task_args = [
-        (img, gpu_ids[i % len(gpu_ids)], output_dir, mask_dir, resume, sigma, tile_num)
+        (img, gpu_ids[i % len(gpu_ids)], output_dir, mask_dir,
+         resume, sigma, tile_num, detect_kernels, dilate_kernels)
         for i, img in enumerate(image_list)
     ]
 
@@ -475,6 +486,17 @@ fill:
   resume: true                      # skip images already in output_dir
   sigma:  5.0                       # gap-detection sensitivity (std devs)
   tile_num: 8                       # grid divisions per axis for local filling
+
+  # Detection kernels [H, W] — tall/wide kernels find horizontal/vertical seams
+  detect_kernels:
+    - [301, 3]
+    - [3, 301]
+
+  # Dilation kernels [H, W] — expand the gap mask before inpainting
+  dilate_kernels:
+    - [101, 3]
+    - [3, 101]
+    - [15, 15]
 
 # =============================================================================
 # Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs

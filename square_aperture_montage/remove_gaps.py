@@ -128,8 +128,29 @@ def fill_gaps(mrc_image_np, mask_np, tile_num=8):
     return output
 
 
+# Default kernel shapes used by build_gap_mask
+DEFAULT_DETECT_KERNELS = [(301, 3), (3, 301)]
+DEFAULT_DILATE_KERNELS = [(101, 3), (3, 101), (15, 15)]
+
+
+def _parse_kernels(kernel_strings):
+    """Parse a sequence of 'H,W' strings into a list of (H, W) tuples.
+
+    Accepts either tuples/lists (already parsed) or strings like '301,3'.
+    """
+    result = []
+    for k in kernel_strings:
+        if isinstance(k, (list, tuple)):
+            result.append(tuple(int(x) for x in k))
+        else:
+            h, w = k.split(',')
+            result.append((int(h.strip()), int(w.strip())))
+    return result
+
+
 def process_image(image_path, output_dir, mask_dir, device,
-                  skip_existing=True, sigma=5.0, tile_num=8):
+                  skip_existing=True, sigma=5.0, tile_num=8,
+                  detect_kernels=None, dilate_kernels=None):
     """Detect and fill gaps for one blended frame MRC."""
     out_path  = os.path.join(output_dir, os.path.basename(image_path))
     mask_path = os.path.join(mask_dir,   os.path.basename(image_path))
@@ -143,7 +164,9 @@ def process_image(image_path, output_dir, mask_dir, device,
     mrc_tensor = torch.from_numpy(mrc_np).float().to(device)
     mrc_tensor = (mrc_tensor - mrc_tensor.mean()) / (mrc_tensor.std() + 1e-6)
 
-    mask_np   = build_gap_mask(mrc_tensor, device, sigma=sigma)
+    mask_np   = build_gap_mask(mrc_tensor, device, sigma=sigma,
+                               detect_kernels=detect_kernels,
+                               dilate_kernels=dilate_kernels)
     write_mrc(mask_path, mask_np)
 
     output_np = fill_gaps(mrc_np, mask_np, tile_num=tile_num)
@@ -152,13 +175,18 @@ def process_image(image_path, output_dir, mask_dir, device,
 
 
 def _process_with_gpu(args):
-    img_path, gpu_id, output_dir, mask_dir, skip_existing, sigma, tile_num = args
+    (img_path, gpu_id, output_dir, mask_dir,
+     skip_existing, sigma, tile_num,
+     detect_kernels, dilate_kernels) = args
     if TORCH_AVAILABLE and torch.cuda.is_available():
         torch.cuda.set_device(gpu_id)
         device = torch.device(f"cuda:{gpu_id}")
     else:
         device = torch.device("cpu")
-    process_image(img_path, output_dir, mask_dir, device, skip_existing, sigma, tile_num)
+    process_image(img_path, output_dir, mask_dir, device,
+                  skip_existing, sigma, tile_num,
+                  detect_kernels=detect_kernels,
+                  dilate_kernels=dilate_kernels)
 
 
 @click.command()
@@ -176,11 +204,23 @@ def _process_with_gpu(args):
               help='Standard-deviation multiplier for outlier gap detection.')
 @click.option('--tile-num',   default=8,   show_default=True,
               help='Grid divisions per axis for local gap filling.')
-def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num):
+@click.option('--detect-kernel', 'detect_kernel_strs',
+              multiple=True, default=('301,3', '3,301'), show_default=True,
+              help='Detection kernel as H,W (repeatable). '
+                   'Applied as average-intensity and gradient filters.')
+@click.option('--dilate-kernel', 'dilate_kernel_strs',
+              multiple=True, default=('101,3', '3,101', '15,15'), show_default=True,
+              help='Dilation kernel as H,W (repeatable). '
+                   'Expands the detected gap mask.')
+def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
+         detect_kernel_strs, dilate_kernel_strs):
     """Detect and fill blending-seam gaps in blended MRC frame stacks."""
     if not TORCH_AVAILABLE:
         print("ERROR: PyTorch is required. Install with: pip install torch")
         sys.exit(1)
+
+    detect_kernels = _parse_kernels(detect_kernel_strs)
+    dilate_kernels = _parse_kernels(dilate_kernel_strs)
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(mask_dir,   exist_ok=True)
@@ -195,7 +235,8 @@ def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num):
     if gpus.strip().lower() == 'cpu' or not torch.cuda.is_available():
         device = torch.device('cpu')
         for img in tqdm.tqdm(image_list, desc="Filling gaps"):
-            process_image(img, output_dir, mask_dir, device, resume, sigma, tile_num)
+            process_image(img, output_dir, mask_dir, device, resume, sigma, tile_num,
+                          detect_kernels=detect_kernels, dilate_kernels=dilate_kernels)
         return
 
     available = torch.cuda.device_count()
@@ -204,7 +245,8 @@ def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num):
 
     print(f"Using GPUs: {gpu_ids}")
     task_args = [
-        (img, gpu_ids[i % len(gpu_ids)], output_dir, mask_dir, resume, sigma, tile_num)
+        (img, gpu_ids[i % len(gpu_ids)], output_dir, mask_dir,
+         resume, sigma, tile_num, detect_kernels, dilate_kernels)
         for i, img in enumerate(image_list)
     ]
 

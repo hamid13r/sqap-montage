@@ -110,6 +110,18 @@ fill:
   # Grid divisions per axis for local gap filling (8 = 8×8 = 64 tiles)
   tile_num: 8
 
+  # Detection kernels — each entry is [height, width].
+  # Tall/wide kernels detect horizontal and vertical seam lines.
+  detect_kernels:
+    - [301, 3]
+    - [3, 301]
+
+  # Dilation kernels — expand the detected gap mask before inpainting.
+  dilate_kernels:
+    - [101, 3]
+    - [3, 101]
+    - [15, 15]
+
 # =============================================================================
 # Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs
 # =============================================================================
