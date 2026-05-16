@@ -2,15 +2,27 @@
 """
 remove_gaps.py — Fill blending-seam gaps in blended MRC frame stacks.
 
-Detects seam artefacts using GPU-accelerated gradient and intensity-outlier
-analysis, builds a binary gap mask, and fills each masked pixel by drawing
-a random sample from surrounding tissue in the same local tile.
+Two masking modes:
+
+Auto-detect (default)
+    Uses GPU-accelerated gradient and intensity-outlier analysis to find
+    seam artefacts automatically.
+
+Manual seams
+    The user supplies explicit row and/or column indices.  The mask is built
+    directly from those positions and then dilated — no GPU detection needed.
+    Useful when you know exactly where the tile boundaries land in the image.
+
+The mask is filled by drawing random samples from surrounding tissue inside
+the same local tile (no interpolation, preserves noise statistics).
 
 Typical usage
 -------------
+  # auto-detect
   sam-fill --input-dir blended/frames --output-dir blended/frames_filled --gpus 0,1,2
 
-  sam-fill --gpus cpu   # CPU fallback
+  # manual seams at rows/cols 3840 and 7680 (3×3 grid with 3840-px tiles)
+  sam-fill --seam-row 3840 --seam-row 7680 --seam-col 3840 --seam-col 7680 --gpus cpu
 
 Run ``sam-fill --help`` for all options.
 """
@@ -148,10 +160,58 @@ def _parse_kernels(kernel_strings):
     return result
 
 
+def build_manual_mask(height, width, seam_rows, seam_cols, device,
+                      dilate_kernels=None):
+    """Build a binary gap mask from explicit row and column positions.
+
+    Sets every pixel in the listed rows and columns to 1, then dilates the
+    mask with ``dilate_kernels`` — the same dilation step used after
+    auto-detection, so seam width is controlled by the same config values.
+
+    Parameters
+    ----------
+    height, width : int
+        Image dimensions in pixels.
+    seam_rows : list[int]
+        Row indices (y) where a seam runs horizontally across the full width.
+    seam_cols : list[int]
+        Column indices (x) where a seam runs vertically across the full height.
+    device : torch.device
+        Device used for dilation convolutions.
+    dilate_kernels : list[(H, W)] or None
+        Kernel shapes for dilation.  Defaults to DEFAULT_DILATE_KERNELS.
+    """
+    if dilate_kernels is None:
+        dilate_kernels = DEFAULT_DILATE_KERNELS
+
+    mask_np = np.zeros((height, width), dtype=np.uint8)
+    for r in seam_rows:
+        if 0 <= r < height:
+            mask_np[r, :] = 1
+    for c in seam_cols:
+        if 0 <= c < width:
+            mask_np[:, c] = 1
+
+    # Dilate using the same torch convolution path as auto-detection
+    mask_t = torch.from_numpy(mask_np).to(device).float()
+    for ksize in dilate_kernels:
+        kernel  = torch.ones((1, 1, *ksize), dtype=torch.float32, device=device) / (ksize[0] * ksize[1])
+        dilated = torch.nn.functional.conv2d(
+            mask_t.unsqueeze(0).unsqueeze(0), kernel, padding='same')[0, 0]
+        mask_t  = ((mask_t + dilated) > 0.1).float()
+
+    return (mask_t > 0).cpu().numpy().astype(np.uint8)
+
+
 def process_image(image_path, output_dir, mask_dir, device,
                   skip_existing=True, sigma=5.0, tile_num=8,
-                  detect_kernels=None, dilate_kernels=None):
-    """Detect and fill gaps for one blended frame MRC."""
+                  detect_kernels=None, dilate_kernels=None,
+                  seam_rows=None, seam_cols=None):
+    """Detect (or use manual seams) and fill gaps for one blended frame MRC.
+
+    If ``seam_rows`` or ``seam_cols`` is non-empty the manual mask path is
+    used and GPU-based auto-detection is skipped entirely.
+    """
     out_path  = os.path.join(output_dir, os.path.basename(image_path))
     mask_path = os.path.join(mask_dir,   os.path.basename(image_path))
 
@@ -161,14 +221,24 @@ def process_image(image_path, output_dir, mask_dir, device,
     with mrcfile.open(image_path, mode='r') as mrc:
         mrc_np = np.array(mrc.data)
 
-    mrc_tensor = torch.from_numpy(mrc_np).float().to(device)
-    mrc_tensor = (mrc_tensor - mrc_tensor.mean()) / (mrc_tensor.std() + 1e-6)
+    h, w = mrc_np.shape[-2], mrc_np.shape[-1]
 
-    mask_np   = build_gap_mask(mrc_tensor, device, sigma=sigma,
-                               detect_kernels=detect_kernels,
-                               dilate_kernels=dilate_kernels)
+    if seam_rows or seam_cols:
+        # Manual mode — no detection needed, just build mask from given positions
+        mask_np = build_manual_mask(
+            h, w,
+            seam_rows or [], seam_cols or [],
+            device, dilate_kernels=dilate_kernels,
+        )
+    else:
+        # Auto-detect mode
+        mrc_tensor = torch.from_numpy(mrc_np).float().to(device)
+        mrc_tensor = (mrc_tensor - mrc_tensor.mean()) / (mrc_tensor.std() + 1e-6)
+        mask_np = build_gap_mask(mrc_tensor, device, sigma=sigma,
+                                 detect_kernels=detect_kernels,
+                                 dilate_kernels=dilate_kernels)
+
     write_mrc(mask_path, mask_np)
-
     output_np = fill_gaps(mrc_np, mask_np, tile_num=tile_num)
     write_mrc(out_path, output_np)
     print(f"  Filled: {os.path.basename(image_path)}")
@@ -177,7 +247,8 @@ def process_image(image_path, output_dir, mask_dir, device,
 def _process_with_gpu(args):
     (img_path, gpu_id, output_dir, mask_dir,
      skip_existing, sigma, tile_num,
-     detect_kernels, dilate_kernels) = args
+     detect_kernels, dilate_kernels,
+     seam_rows, seam_cols) = args
     if TORCH_AVAILABLE and torch.cuda.is_available():
         torch.cuda.set_device(gpu_id)
         device = torch.device(f"cuda:{gpu_id}")
@@ -186,7 +257,9 @@ def _process_with_gpu(args):
     process_image(img_path, output_dir, mask_dir, device,
                   skip_existing, sigma, tile_num,
                   detect_kernels=detect_kernels,
-                  dilate_kernels=dilate_kernels)
+                  dilate_kernels=dilate_kernels,
+                  seam_rows=seam_rows,
+                  seam_cols=seam_cols)
 
 
 @click.command()
@@ -207,20 +280,43 @@ def _process_with_gpu(args):
 @click.option('--detect-kernel', 'detect_kernel_strs',
               multiple=True, default=('301,3', '3,301'), show_default=True,
               help='Detection kernel as H,W (repeatable). '
-                   'Applied as average-intensity and gradient filters.')
+                   'Ignored when --seam-row / --seam-col are supplied.')
 @click.option('--dilate-kernel', 'dilate_kernel_strs',
               multiple=True, default=('101,3', '3,101', '15,15'), show_default=True,
               help='Dilation kernel as H,W (repeatable). '
-                   'Expands the detected gap mask.')
+                   'Applied in both auto-detect and manual-seam modes.')
+@click.option('--seam-row', 'seam_rows', multiple=True, type=int, default=(),
+              help='Row index of a horizontal seam to fill (repeatable). '
+                   'Providing any --seam-row or --seam-col disables auto-detection.')
+@click.option('--seam-col', 'seam_cols', multiple=True, type=int, default=(),
+              help='Column index of a vertical seam to fill (repeatable). '
+                   'Providing any --seam-row or --seam-col disables auto-detection.')
 def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
-         detect_kernel_strs, dilate_kernel_strs):
-    """Detect and fill blending-seam gaps in blended MRC frame stacks."""
+         detect_kernel_strs, dilate_kernel_strs, seam_rows, seam_cols):
+    """Detect and fill blending-seam gaps in blended MRC frame stacks.
+
+    \b
+    Two modes:
+
+      Auto-detect (default):
+        python -m square_aperture_montage.remove_gaps --input-dir blended/frames
+
+      Manual seams (bypasses GPU detection):
+        python -m square_aperture_montage.remove_gaps \\
+          --seam-row 3840 --seam-row 7680 \\
+          --seam-col 3840 --seam-col 7680 --gpus cpu
+    """
     if not TORCH_AVAILABLE:
         print("ERROR: PyTorch is required. Install with: pip install torch")
         sys.exit(1)
 
     detect_kernels = _parse_kernels(detect_kernel_strs)
     dilate_kernels = _parse_kernels(dilate_kernel_strs)
+
+    if seam_rows or seam_cols:
+        print(f"Manual seam mode — rows: {list(seam_rows)}  cols: {list(seam_cols)}")
+    else:
+        print(f"Auto-detect mode — sigma: {sigma}  detect_kernels: {detect_kernels}")
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(mask_dir,   exist_ok=True)
@@ -236,7 +332,8 @@ def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
         device = torch.device('cpu')
         for img in tqdm.tqdm(image_list, desc="Filling gaps"):
             process_image(img, output_dir, mask_dir, device, resume, sigma, tile_num,
-                          detect_kernels=detect_kernels, dilate_kernels=dilate_kernels)
+                          detect_kernels=detect_kernels, dilate_kernels=dilate_kernels,
+                          seam_rows=list(seam_rows), seam_cols=list(seam_cols))
         return
 
     available = torch.cuda.device_count()
@@ -246,7 +343,9 @@ def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
     print(f"Using GPUs: {gpu_ids}")
     task_args = [
         (img, gpu_ids[i % len(gpu_ids)], output_dir, mask_dir,
-         resume, sigma, tile_num, detect_kernels, dilate_kernels)
+         resume, sigma, tile_num,
+         detect_kernels, dilate_kernels,
+         list(seam_rows), list(seam_cols))
         for i, img in enumerate(image_list)
     ]
 

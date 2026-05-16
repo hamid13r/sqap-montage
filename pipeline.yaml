@@ -117,10 +117,18 @@ fill:
     - [3, 301]
 
   # Dilation kernels — expand the detected gap mask before inpainting.
+  # Applied in both auto-detect and manual-seam modes.
   dilate_kernels:
     - [101, 3]
     - [3, 101]
     - [15, 15]
+
+  # Manual seam positions (pixels). Providing these disables auto-detection.
+  # Use when you know exactly where the tile boundaries land in the image.
+  # For a 3×3 grid of 3840-px tiles the seams fall at rows/cols 3840 and 7680.
+  # Leave as empty lists [] to use auto-detection instead.
+  seam_rows: []   # e.g. [3840, 7680]
+  seam_cols: []   # e.g. [3840, 7680]
 
 # =============================================================================
 # Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs

@@ -256,9 +256,13 @@ def fill(config):
     sigma      = float(f.get('sigma',  5.0))
     tile_num   = int(f.get('tile_num', 8))
 
-    # Kernels: accept [[H, W], ...] from YAML or fall back to coded defaults
+    # Kernels
     detect_kernels = _parse_kernels(f.get('detect_kernels', DEFAULT_DETECT_KERNELS))
     dilate_kernels = _parse_kernels(f.get('dilate_kernels', DEFAULT_DILATE_KERNELS))
+
+    # Manual seam positions — if set, auto-detection is skipped entirely
+    seam_rows = [int(r) for r in f.get('seam_rows', [])]
+    seam_cols = [int(c) for c in f.get('seam_cols', [])]
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(mask_dir,   exist_ok=True)
@@ -269,14 +273,19 @@ def fill(config):
         sys.exit(1)
 
     click.echo(f"Found {len(image_list)} images to process.")
-    click.echo(f"  detect_kernels: {detect_kernels}")
+    if seam_rows or seam_cols:
+        click.echo(f"  Mode: manual seams — rows: {seam_rows}  cols: {seam_cols}")
+    else:
+        click.echo(f"  Mode: auto-detect — sigma: {sigma}")
+        click.echo(f"  detect_kernels: {detect_kernels}")
     click.echo(f"  dilate_kernels: {dilate_kernels}")
 
     if gpus.strip().lower() == 'cpu' or not torch.cuda.is_available():
         device = torch.device('cpu')
         for img in tqdm(image_list, desc="Filling gaps"):
             process_image(img, output_dir, mask_dir, device, resume, sigma, tile_num,
-                          detect_kernels=detect_kernels, dilate_kernels=dilate_kernels)
+                          detect_kernels=detect_kernels, dilate_kernels=dilate_kernels,
+                          seam_rows=seam_rows, seam_cols=seam_cols)
         click.echo("Fill done.")
         return
 
@@ -287,7 +296,9 @@ def fill(config):
     click.echo(f"Using GPUs: {gpu_ids}")
     task_args = [
         (img, gpu_ids[i % len(gpu_ids)], output_dir, mask_dir,
-         resume, sigma, tile_num, detect_kernels, dilate_kernels)
+         resume, sigma, tile_num,
+         detect_kernels, dilate_kernels,
+         seam_rows, seam_cols)
         for i, img in enumerate(image_list)
     ]
 
@@ -493,10 +504,17 @@ fill:
     - [3, 301]
 
   # Dilation kernels [H, W] — expand the gap mask before inpainting
+  # Applied in both auto-detect and manual-seam modes
   dilate_kernels:
     - [101, 3]
     - [3, 101]
     - [15, 15]
+
+  # Manual seam positions (pixels). Providing these disables auto-detection.
+  # For a 3×3 grid of 3840-px tiles the seams land at rows/cols 3840 and 7680.
+  # Leave as [] to use auto-detection.
+  seam_rows: []   # e.g. [3840, 7680]
+  seam_cols: []   # e.g. [3840, 7680]
 
 # =============================================================================
 # Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs
