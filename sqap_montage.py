@@ -260,9 +260,10 @@ def fill(config):
     detect_kernels = _parse_kernels(f.get('detect_kernels', DEFAULT_DETECT_KERNELS))
     dilate_kernels = _parse_kernels(f.get('dilate_kernels', DEFAULT_DILATE_KERNELS))
 
-    # Manual seam positions — if set, auto-detection is skipped entirely
-    seam_rows = [int(r) for r in f.get('seam_rows', [])]
-    seam_cols = [int(c) for c in f.get('seam_cols', [])]
+    # Manual seam positions — if set, auto-detection is skipped entirely.
+    # Each entry may be an integer or an "start-end" range string.
+    seam_rows = _parse_index_list(f.get('seam_rows', []))
+    seam_cols = _parse_index_list(f.get('seam_cols', []))
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(mask_dir,   exist_ok=True)
@@ -511,10 +512,14 @@ fill:
     - [15, 15]
 
   # Manual seam positions (pixels). Providing these disables auto-detection.
-  # For a 3×3 grid of 3840-px tiles the seams land at rows/cols 3840 and 7680.
+  # Each entry is a single pixel index or an inclusive range "start-end".
   # Leave as [] to use auto-detection.
-  seam_rows: []   # e.g. [3840, 7680]
-  seam_cols: []   # e.g. [3840, 7680]
+  #
+  #   single pixels:  seam_rows: [3840, 7680]
+  #   ranges:         seam_rows: ["3838-3842", "7678-7682"]
+  #   mixed:          seam_rows: [3840, "7678-7682"]
+  seam_rows: []
+  seam_cols: []
 
 # =============================================================================
 # Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs

@@ -160,6 +160,41 @@ def _parse_kernels(kernel_strings):
     return result
 
 
+def _parse_index_list(entries):
+    """Expand a mixed list of pixel indices and range strings into a flat int list.
+
+    Each entry may be:
+      - an integer             e.g. 3840
+      - a string integer       e.g. "3840"
+      - a closed range string  e.g. "3840-3860"  → 3840, 3841, …, 3860 (inclusive)
+
+    Multiple entries and ranges are combined and deduplicated in sorted order.
+
+    Examples
+    --------
+    >>> _parse_index_list([3840, 7680])
+    [3840, 7680]
+    >>> _parse_index_list(["3840-3850", 7680])
+    [3840, 3841, 3842, 3843, 3844, 3845, 3846, 3847, 3848, 3849, 3850, 7680]
+    >>> _parse_index_list(["1-5", "8-10", 20])
+    [1, 2, 3, 4, 5, 8, 9, 10, 20]
+    """
+    indices = set()
+    for entry in entries:
+        s = str(entry).strip()
+        # Detect a range: contains '-' that is NOT a leading minus sign
+        dash_pos = s.find('-', 1)   # search from position 1 to skip leading '-'
+        if dash_pos != -1:
+            start = int(s[:dash_pos].strip())
+            end   = int(s[dash_pos + 1:].strip())
+            if start > end:
+                start, end = end, start  # tolerate reversed order
+            indices.update(range(start, end + 1))
+        else:
+            indices.add(int(s))
+    return sorted(indices)
+
+
 def build_manual_mask(height, width, seam_rows, seam_cols, device,
                       dilate_kernels=None):
     """Build a binary gap mask from explicit row and column positions.
@@ -285,14 +320,16 @@ def _process_with_gpu(args):
               multiple=True, default=('101,3', '3,101', '15,15'), show_default=True,
               help='Dilation kernel as H,W (repeatable). '
                    'Applied in both auto-detect and manual-seam modes.')
-@click.option('--seam-row', 'seam_rows', multiple=True, type=int, default=(),
-              help='Row index of a horizontal seam to fill (repeatable). '
-                   'Providing any --seam-row or --seam-col disables auto-detection.')
-@click.option('--seam-col', 'seam_cols', multiple=True, type=int, default=(),
-              help='Column index of a vertical seam to fill (repeatable). '
-                   'Providing any --seam-row or --seam-col disables auto-detection.')
+@click.option('--seam-row', 'seam_row_strs', multiple=True, type=str, default=(),
+              help='Horizontal seam row(s) to fill (repeatable). '
+                   'Accepts a single pixel index (e.g. 3840) or an inclusive range '
+                   '(e.g. 3840-3860). Providing any --seam-row or --seam-col '
+                   'disables auto-detection.')
+@click.option('--seam-col', 'seam_col_strs', multiple=True, type=str, default=(),
+              help='Vertical seam column(s) to fill (repeatable). '
+                   'Accepts a single pixel index or an inclusive range (e.g. 7680-7700).')
 def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
-         detect_kernel_strs, dilate_kernel_strs, seam_rows, seam_cols):
+         detect_kernel_strs, dilate_kernel_strs, seam_row_strs, seam_col_strs):
     """Detect and fill blending-seam gaps in blended MRC frame stacks.
 
     \b
@@ -301,10 +338,14 @@ def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
       Auto-detect (default):
         python -m square_aperture_montage.remove_gaps --input-dir blended/frames
 
-      Manual seams (bypasses GPU detection):
+      Manual seams — single pixels or inclusive ranges, bypasses GPU detection:
         python -m square_aperture_montage.remove_gaps \\
           --seam-row 3840 --seam-row 7680 \\
           --seam-col 3840 --seam-col 7680 --gpus cpu
+
+        python -m square_aperture_montage.remove_gaps \\
+          --seam-row 3838-3842 --seam-row 7678-7682 \\
+          --seam-col 3838-3842 --seam-col 7678-7682 --gpus cpu
     """
     if not TORCH_AVAILABLE:
         print("ERROR: PyTorch is required. Install with: pip install torch")
@@ -312,9 +353,11 @@ def main(input_dir, output_dir, mask_dir, gpus, resume, sigma, tile_num,
 
     detect_kernels = _parse_kernels(detect_kernel_strs)
     dilate_kernels = _parse_kernels(dilate_kernel_strs)
+    seam_rows      = _parse_index_list(seam_row_strs)
+    seam_cols      = _parse_index_list(seam_col_strs)
 
     if seam_rows or seam_cols:
-        print(f"Manual seam mode — rows: {list(seam_rows)}  cols: {list(seam_cols)}")
+        print(f"Manual seam mode — rows: {seam_rows}  cols: {seam_cols}")
     else:
         print(f"Auto-detect mode — sigma: {sigma}  detect_kernels: {detect_kernels}")
 

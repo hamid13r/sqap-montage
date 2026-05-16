@@ -124,11 +124,17 @@ fill:
     - [15, 15]
 
   # Manual seam positions (pixels). Providing these disables auto-detection.
-  # Use when you know exactly where the tile boundaries land in the image.
-  # For a 3×3 grid of 3840-px tiles the seams fall at rows/cols 3840 and 7680.
+  # Each entry is either a single pixel index or an inclusive range "start-end".
   # Leave as empty lists [] to use auto-detection instead.
-  seam_rows: []   # e.g. [3840, 7680]
-  seam_cols: []   # e.g. [3840, 7680]
+  #
+  # Examples:
+  #   single pixels  → seam_rows: [3840, 7680]
+  #   ranges         → seam_rows: ["3838-3842", "7678-7682"]
+  #   mixed          → seam_rows: [3840, "7678-7682"]
+  #
+  # For a 3×3 grid of 3840-px tiles the seam centre lines fall at 3840 and 7680.
+  seam_rows: []
+  seam_cols: []
 
 # =============================================================================
 # Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs
