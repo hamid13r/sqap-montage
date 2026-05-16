@@ -19,6 +19,7 @@ Generate a template config:
 import concurrent.futures
 import glob
 import os
+import shutil
 import sys
 from pathlib import Path, PureWindowsPath
 
@@ -63,6 +64,21 @@ def resolve(data_dir: str, rel_path: str) -> str:
     return os.path.join(data_dir, rel_path)
 
 
+def _cleanup_dir(path: str, keep: bool) -> None:
+    """Delete a directory tree unless keep_intermediate is True.
+
+    Prints a one-line status either way so the user knows what happened.
+    Does nothing if the directory does not exist.
+    """
+    if not os.path.isdir(path):
+        return
+    if keep:
+        click.echo(f"  [keep] intermediate files retained: {path}")
+    else:
+        shutil.rmtree(path)
+        click.echo(f"  [cleanup] removed intermediate dir: {path}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI group
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,9 +116,10 @@ def crop(config):
 
     Reads the [crop] section of the config file.
     """
-    cfg      = load_config(config)
-    c        = cfg.get('crop', {})
-    data_dir = cfg.get('data_dir', '.')
+    cfg              = load_config(config)
+    c                = cfg.get('crop', {})
+    data_dir         = cfg.get('data_dir', '.')
+    keep_intermediate = cfg.get('keep_intermediate', False)
 
     input_dir      = resolve(data_dir, c.get('input_dir',      'frames/averages'))
     output_dir     = resolve(data_dir, c.get('output_dir',     'cropped'))
@@ -142,6 +159,7 @@ def crop(config):
             crop_frames_for_image(image_file, frames_dir, output_frames_dir, x0, x1, y0, y1)
 
     click.echo("Crop done.")
+    _cleanup_dir(processing_dir, keep_intermediate)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,9 +174,10 @@ def blend(config):
 
     Reads the [blend] section of the config file.
     """
-    cfg      = load_config(config)
-    b        = cfg.get('blend', {})
-    data_dir = cfg.get('data_dir', '.')
+    cfg               = load_config(config)
+    b                 = cfg.get('blend', {})
+    data_dir          = cfg.get('data_dir', '.')
+    keep_intermediate = cfg.get('keep_intermediate', False)
 
     mdoc_dir       = resolve(data_dir, b.get('mdoc_dir',       'mdocs'))
     averages_dir   = resolve(data_dir, b.get('averages_dir',   'cropped/averages'))
@@ -215,6 +234,9 @@ def blend(config):
         )
 
     click.echo("\nBlend done.")
+    # Only the two subdirs we created are cleaned up — not the whole processing/ parent
+    _cleanup_dir(proc_avg, keep_intermediate)
+    _cleanup_dir(proc_frm, keep_intermediate)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -443,11 +465,24 @@ TEMPLATE_CONFIG = """\
 #   python sqap_montage.py blend     --config pipeline.yaml
 #   python sqap_montage.py fill      --config pipeline.yaml
 #   python sqap_montage.py make-mdoc --config pipeline.yaml
+#
+# Generate a fresh copy of this file:
+#   python sqap_montage.py write-config pipeline.yaml
 # =============================================================================
 
 # Root directory where your data lives.
 # All relative paths below are resolved from here.
 data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
+
+# =============================================================================
+# Global options
+# =============================================================================
+
+# Intermediate files (IMOD stacks, plin/plout files, raw blended MRCs) can be
+# large. By default they are deleted once each step finishes successfully.
+# Set to true to keep them — useful for debugging or re-running blendmont
+# with different parameters without re-running newstack.
+keep_intermediate: false
 
 # =============================================================================
 # Step 1: crop — remove blank aperture borders from each tile image

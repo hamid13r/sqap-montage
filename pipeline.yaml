@@ -1,22 +1,29 @@
 # =============================================================================
 # sqap-montage pipeline config
 # =============================================================================
-# Run with:
-#   sam-run --config pipeline.yaml
+# Run individual steps:
+#   python sqap_montage.py crop      --config pipeline.yaml
+#   python sqap_montage.py blend     --config pipeline.yaml
+#   python sqap_montage.py fill      --config pipeline.yaml
+#   python sqap_montage.py make-mdoc --config pipeline.yaml
 #
 # Generate a fresh copy of this file:
-#   sam-run --write-config pipeline.yaml
-#
-# Run only specific steps:
-#   sam-run --config pipeline.yaml --steps crop --steps blend
-#
-# Dry-run (print what would happen without doing it):
-#   sam-run --config pipeline.yaml --dry-run
+#   python sqap_montage.py write-config pipeline.yaml
 # =============================================================================
 
 # Root directory where your data lives.
 # All relative paths below are resolved from here.
 data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
+
+# =============================================================================
+# Global options
+# =============================================================================
+
+# Intermediate files (IMOD stacks, plin/plout files, raw blended MRCs) can be
+# large. By default they are deleted once each step finishes successfully.
+# Set to true to keep them — useful for debugging or re-running blendmont
+# with different parameters without re-running newstack.
+keep_intermediate: false
 
 # Which steps to run. Set any to false to skip.
 steps:
