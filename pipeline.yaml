@@ -19,10 +19,11 @@ data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
 # Global options
 # =============================================================================
 
-# Intermediate files (IMOD stacks, plin/plout files, raw blended MRCs) can be
-# large. By default they are deleted once each step finishes successfully.
-# Set to true to keep them — useful for debugging or re-running blendmont
-# with different parameters without re-running newstack.
+# Intermediate .mrc files (IMOD stacks, raw blended MRCs) can be large.
+# By default they are deleted from the processing/ dirs once each step
+# finishes successfully. Text files (.plin, .plout, .txt, logs) are always
+# kept — delete the processing/ folder manually if you want to remove those.
+# Set to true to keep the intermediate .mrc files too.
 keep_intermediate: false
 
 # Which steps to run. Set any to false to skip.

@@ -65,18 +65,23 @@ def resolve(data_dir: str, rel_path: str) -> str:
 
 
 def _cleanup_dir(path: str, keep: bool) -> None:
-    """Delete a directory tree unless keep_intermediate is True.
+    """Delete intermediate .mrc files inside a processing directory.
 
-    Prints a one-line status either way so the user knows what happened.
-    Does nothing if the directory does not exist.
+    Only removes *.mrc files — text files (.txt, .plin, .plout, .log, etc.)
+    are left in place so the user can inspect them or delete the whole
+    directory manually afterwards.
+
+    Prints a summary line. Does nothing if the directory does not exist.
     """
     if not os.path.isdir(path):
         return
     if keep:
         click.echo(f"  [keep] intermediate files retained: {path}")
-    else:
-        shutil.rmtree(path)
-        click.echo(f"  [cleanup] removed intermediate dir: {path}")
+        return
+    mrc_files = glob.glob(os.path.join(path, '**', '*.mrc'), recursive=True)
+    for f in mrc_files:
+        os.remove(f)
+    click.echo(f"  [cleanup] removed {len(mrc_files)} intermediate .mrc file(s) from {path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -478,10 +483,11 @@ data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
 # Global options
 # =============================================================================
 
-# Intermediate files (IMOD stacks, plin/plout files, raw blended MRCs) can be
-# large. By default they are deleted once each step finishes successfully.
-# Set to true to keep them — useful for debugging or re-running blendmont
-# with different parameters without re-running newstack.
+# Intermediate .mrc files (IMOD stacks, raw blended MRCs) can be large.
+# By default they are deleted from the processing/ dirs once each step
+# finishes successfully. Text files (.plin, .plout, .txt, logs) are always
+# kept — delete the processing/ folder manually if you want to remove those.
+# Set to true to keep the intermediate .mrc files too.
 keep_intermediate: false
 
 # =============================================================================
