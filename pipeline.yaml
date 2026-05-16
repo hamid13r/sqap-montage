@@ -1,0 +1,121 @@
+# =============================================================================
+# sqap-montage pipeline config
+# =============================================================================
+# Run with:
+#   sam-run --config pipeline.yaml
+#
+# Generate a fresh copy of this file:
+#   sam-run --write-config pipeline.yaml
+#
+# Run only specific steps:
+#   sam-run --config pipeline.yaml --steps crop --steps blend
+#
+# Dry-run (print what would happen without doing it):
+#   sam-run --config pipeline.yaml --dry-run
+# =============================================================================
+
+# Root directory where your data lives.
+# All relative paths below are resolved from here.
+data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
+
+# Which steps to run. Set any to false to skip.
+steps:
+  crop:  true
+  blend: true
+  fill:  true
+
+# =============================================================================
+# Step 1: crop_images — remove blank aperture borders from each tile image
+# =============================================================================
+crop:
+  # Input: motion-corrected average MRCs (one per exposure)
+  input_dir: frames/averages
+
+  # Output root — creates cropped/averages/ and cropped/frames/ inside
+  output_dir: cropped
+
+  # Directory for intermediate boundary coordinate files
+  processing_dir: processing/crop
+
+  # Also crop the matching raw frame stacks (true/false)
+  crop_frames: true
+
+  # Where to find raw frame MRCs/TIFs (only used if crop_frames: true)
+  frames_dir: frames
+
+  # Final tile size in pixels (centred crop)
+  crop_x: 3840
+  crop_y: 3840
+
+  # Detection parameters — usually don't need changing
+  filter_window:  200    # moving-average filter width
+  mask_threshold: 0.5    # fraction of peak intensity → illuminated region
+  trim:           50     # pixels to shave inside the detected edge
+
+# =============================================================================
+# Step 2: blend_tiles — stitch tiles into one tilt-series per angle
+# =============================================================================
+blend:
+  # SerialEM .mrc.mdoc files — one per tile per tilt-series
+  mdoc_dir: mdocs
+
+  # Cropped average images from step 1
+  averages_dir: cropped/averages
+
+  # Cropped frame stacks from step 1 (only needed if blend_frames: true)
+  frames_dir: cropped/frames
+
+  # Output root — creates blended/averages/ and blended/frames/ inside
+  output_dir: blended
+
+  # Directory for intermediate stacks, plins, etc.
+  processing_dir: processing
+
+  # Output image edge length in pixels after IMOD clip resize
+  blend_size: 11664
+
+  # Also blend per-frame stacks in addition to averages (true/false)
+  blend_frames: true
+
+  # Number of raw frames per exposure (used when blend_frames: true)
+  num_frames: 4
+
+  # Process only these tilt-series names (leave empty [] to process all)
+  # Example: ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
+  ts_filter: []
+
+# =============================================================================
+# Step 3: remove_gaps — fill blending-seam artefacts with local texture
+# =============================================================================
+fill:
+  # Blended frame stacks from step 2
+  input_dir:  blended/frames
+
+  # Where to write gap-filled output
+  output_dir: blended/frames_filled
+
+  # Where to write the binary gap masks (useful for QC)
+  mask_dir:   blended/frames_masks
+
+  # GPU IDs to use, comma-separated (e.g. "0,1,2").
+  # Use "cpu" to force CPU (much slower).
+  gpus: "0"
+
+  # Skip images that already exist in output_dir (true/false)
+  resume: true
+
+  # Gap-detection sensitivity (standard deviations from mean)
+  sigma: 5.0
+
+  # Grid divisions per axis for local gap filling (8 = 8×8 = 64 tiles)
+  tile_num: 8
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  # Directory for timestamped log files. Set to "" to disable file logging.
+  log_dir: logs
+
+  # Log verbosity: DEBUG | INFO | WARNING | ERROR
+  level: INFO

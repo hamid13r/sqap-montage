@@ -18,6 +18,7 @@ dependencies = [
     "numpy>=1.23",
     "Pillow>=9.0",
     "tqdm>=4.60",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ all = [
 ]
 
 [project.scripts]
+sam-run    = "square_aperture_montage.run_pipeline:main"
 sam-crop   = "square_aperture_montage.crop_images:main"
 sam-blend  = "square_aperture_montage.blend_tiles:main"
 sam-fill   = "square_aperture_montage.remove_gaps:main"

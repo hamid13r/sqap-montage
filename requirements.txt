@@ -4,6 +4,7 @@ mrcfile>=1.4
 numpy>=1.23
 Pillow>=9.0
 tqdm>=4.60
+pyyaml>=6.0
 
 # Optional: gap filling (remove_gaps.py)
 # torch>=2.0
