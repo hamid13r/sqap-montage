@@ -38,10 +38,10 @@ all = [
 [project.scripts]
 sqap-montage = "sqap_montage:cli"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["square_aperture_montage*"]
-
 [tool.setuptools]
 # sqap_montage.py lives at the repo root and is the main entry point
 py-modules = ["sqap_montage"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["square_aperture_montage*"]

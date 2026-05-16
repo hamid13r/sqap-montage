@@ -1,0 +1,22 @@
+name: sqap-montage-gpu
+channels:
+  - pytorch        # official PyTorch channel (fastest, most compatible)
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  # core runtime dependencies
+  - click>=8.0
+  - mrcfile>=1.4
+  - numpy>=1.23
+  - pillow>=9.0
+  - tqdm>=4.60
+  - pyyaml>=6.0
+  # GPU deps — PyTorch from the pytorch channel, cc3d from conda-forge
+  - pytorch>=2.0
+  - torchvision      # pulled in alongside pytorch
+  - pytorch-cuda     # adjust cuda version if needed, e.g. pytorch-cuda=11.8
+  - connected-components-3d>=3.0   # cc3d on conda-forge
+  - pip
+  - pip:
+      - -e ".[gpu]"

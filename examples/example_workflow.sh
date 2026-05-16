@@ -2,70 +2,56 @@
 # =============================================================================
 # example_workflow.sh — End-to-end square-aperture montage pipeline
 #
-# Run from your DATA directory (the folder containing mdocs/ and frames/).
+# Run from your DATA directory (the folder containing mdocs/ and frames/),
+# pointing at a pipeline.yaml config file.
 #
 # Usage:
 #   cd /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
 #   bash /path/to/sqap-montage/examples/example_workflow.sh
 #
-# Override any default with an environment variable:
-#   BLEND_SIZE=9000 CROP_X=3200 bash example_workflow.sh
+# The script looks for pipeline.yaml in the current directory by default.
+# Override with: CONFIG=/path/to/pipeline.yaml bash example_workflow.sh
 # =============================================================================
 
 set -euo pipefail
 
-MDOC_DIR="${MDOC_DIR:-mdocs}"
-AVERAGES_DIR="${AVERAGES_DIR:-frames/averages}"
-FRAMES_DIR="${FRAMES_DIR:-frames}"
-CROP_X="${CROP_X:-3840}"
-CROP_Y="${CROP_Y:-3840}"
-BLEND_SIZE="${BLEND_SIZE:-11664}"
-NUM_FRAMES="${NUM_FRAMES:-4}"
-GPUS="${GPUS:-0}"
-OUTPUT_DIR="${OUTPUT_DIR:-blended}"
-PROCESSING_DIR="${PROCESSING_DIR:-processing}"
-TS_FILTER="${TS_FILTER:-}"   # leave empty to process all series
+CONFIG="${CONFIG:-pipeline.yaml}"
+
+# Resolve the sqap_montage.py path relative to this script's location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SQAP="${SQAP:-python ${SCRIPT_DIR}/../sqap_montage.py}"
+
+if [ ! -f "$CONFIG" ]; then
+    echo "ERROR: Config file '$CONFIG' not found."
+    echo "Generate one with: $SQAP write-config pipeline.yaml"
+    exit 1
+fi
 
 echo "============================================================"
 echo "  Square-aperture montage pipeline"
+echo "  Config:           $CONFIG"
 echo "  Working directory: $(pwd)"
 echo "============================================================"
 
 echo ""
-echo "[1/3] Cropping tile borders..."
-sam-crop \
-    --input-dir   "$AVERAGES_DIR" \
-    --output-dir  cropped \
-    --frames-dir  "$FRAMES_DIR" \
-    --crop-x      "$CROP_X" \
-    --crop-y      "$CROP_Y"
+echo "[1/4] Cropping tile borders..."
+$SQAP crop --config "$CONFIG"
 
 echo ""
-echo "[2/3] Blending tiles..."
-TS_FLAGS=""
-for ts in $TS_FILTER; do TS_FLAGS="$TS_FLAGS --ts $ts"; done
-
-sam-blend \
-    --mdoc-dir       "$MDOC_DIR" \
-    --averages-dir   cropped/averages \
-    --frames-dir     cropped/frames \
-    --output-dir     "$OUTPUT_DIR" \
-    --processing-dir "$PROCESSING_DIR" \
-    --blend-size     "$BLEND_SIZE" \
-    --num-frames     "$NUM_FRAMES" \
-    $TS_FLAGS
+echo "[2/4] Blending tiles..."
+$SQAP blend --config "$CONFIG"
 
 echo ""
-echo "[3/3] Filling blending-seam gaps..."
-sam-fill \
-    --input-dir  "$OUTPUT_DIR/frames" \
-    --output-dir "$OUTPUT_DIR/frames_filled" \
-    --mask-dir   "$OUTPUT_DIR/frames_masks" \
-    --gpus       "$GPUS" \
-    --resume
+echo "[3/4] Filling blending-seam gaps..."
+$SQAP fill --config "$CONFIG"
+
+echo ""
+echo "[4/4] Building blended mdoc files..."
+$SQAP make-mdoc --config "$CONFIG"
 
 echo ""
 echo "============================================================"
-echo "  Done!  Results in: $OUTPUT_DIR/"
-echo "  MDOCs: $OUTPUT_DIR/averages/mdocs/  and  $OUTPUT_DIR/frames/mdocs/"
+echo "  Done!"
+echo "  Blended tilt-series:  blended/averages/  and  blended/frames/"
+echo "  Blended mdocs:        blended_mdocs/"
 echo "============================================================"
