@@ -1,0 +1,52 @@
+# ── Data files ────────────────────────────────────────────────────────────────
+*.mrc
+*.tif
+*.tiff
+*.dm4
+*.st
+*.ali
+*.rec
+*.mdoc
+!examples/**/*.mdoc
+
+# ── IMOD / SerialEM intermediate files ────────────────────────────────────────
+*.filein
+*.plin
+*.plout
+*.log
+*.rawtlt
+*.xf
+*.tlt
+*.fid
+*.prexf
+*.prexg
+*.com
+
+# ── Processing directories ────────────────────────────────────────────────────
+processing/
+blended/
+cropped/
+frames/
+tiltstacks/
+clipped_mics/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# ── Scratch outputs ───────────────────────────────────────────────────────────
+*.bak
+wrapper_imod_frames.sh

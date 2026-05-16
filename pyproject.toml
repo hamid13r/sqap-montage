@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "square-aperture-montage"
+version = "0.1.0"
+description = "Stitch 3×3 cryo-EM tilt-series tiles into one giant tilt-series using IMOD"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Hamidreza Rahmani", email = "hrahmani@scripps.edu" }
+]
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0",
+    "mrcfile>=1.4",
+    "numpy>=1.23",
+    "Pillow>=9.0",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "torch>=2.0",
+    "cc3d>=3.0",
+]
+examples = [
+    "pandas",
+    "matplotlib",
+    "pyserialem",
+]
+all = [
+    "square-aperture-montage[gpu,examples]",
+]
+
+[project.scripts]
+sam-crop   = "square_aperture_montage.crop_images:main"
+sam-blend  = "square_aperture_montage.blend_tiles:main"
+sam-fill   = "square_aperture_montage.remove_gaps:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["square_aperture_montage*"]

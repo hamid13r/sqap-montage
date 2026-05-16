@@ -1,0 +1,15 @@
+# Core dependencies (always required)
+click>=8.0
+mrcfile>=1.4
+numpy>=1.23
+Pillow>=9.0
+tqdm>=4.60
+
+# Optional: gap filling (remove_gaps.py)
+# torch>=2.0
+# cc3d>=3.0
+
+# Optional: examples / demos
+# pandas
+# matplotlib
+# pyserialem
