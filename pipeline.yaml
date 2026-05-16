@@ -111,6 +111,62 @@ fill:
   tile_num: 8
 
 # =============================================================================
+# Step 4: make-mdoc — build blended .mdoc files from per-tile mdocs
+# =============================================================================
+make_mdoc:
+  # Same per-tile mdocs used by the blend step
+  mdoc_dir:    mdocs
+
+  # Blended average images produced by the blend step
+  blended_dir: blended/averages
+
+  # Where to write the combined blended .mrc.mdoc files
+  output_dir:  blended_mdocs
+
+  # Electron dose delivered per tilt (e-/Å²).
+  # ExposureDose = (tilt_index + 0.5) * dose_per_tilt
+  dose_per_tilt: 3.0
+
+  # Process only these tilt-series (leave empty [] to process all)
+  ts_filter: []
+
+  # Keys to copy from the _0_0 corner tile into the blended mdoc.
+  # Remove any key you don't want; leave commented out to use the defaults.
+  # keys_to_copy:
+  #   - MinMaxMean
+  #   - StagePosition
+  #   - StageZ
+  #   - Magnification
+  #   - Intensity
+  #   - DoseRate
+  #   - PixelSpacing
+  #   - SpotSize
+  #   - ProbeMode
+  #   - ImageShift
+  #   - RotationAngle
+  #   - TiltAngle
+  #   - ExposureTime
+  #   - Binning
+  #   - CameraIndex
+  #   - DividedBy2
+  #   - OperatingMode
+  #   - UsingCDS
+  #   - MagIndex
+  #   - LowDoseConSet
+  #   - CountsPerElectron
+  #   - TargetDefocus
+  #   - NumSubFrames
+  #   - FrameDosesAndNumber
+  #   - DateTime
+  #   - FilterSlitAndLoss
+  #   - UncroppedSize
+  #   - RotationAndFlip
+  #   - TimeStamp
+  #   - SpecimenShift
+  #   - EucentricOffset
+  #   - Ctfplotter
+
+# =============================================================================
 # Logging
 # =============================================================================
 logging:

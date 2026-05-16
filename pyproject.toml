@@ -36,11 +36,12 @@ all = [
 ]
 
 [project.scripts]
-sam-run    = "square_aperture_montage.run_pipeline:main"
-sam-crop   = "square_aperture_montage.crop_images:main"
-sam-blend  = "square_aperture_montage.blend_tiles:main"
-sam-fill   = "square_aperture_montage.remove_gaps:main"
+sqap-montage = "sqap_montage:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["square_aperture_montage*"]
+
+[tool.setuptools]
+# sqap_montage.py lives at the repo root and is the main entry point
+py-modules = ["sqap_montage"]
