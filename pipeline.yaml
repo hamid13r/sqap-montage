@@ -51,6 +51,11 @@ crop:
   # Where to find raw frame MRCs/TIFs (only used if crop_frames: true)
   frames_dir: frames
 
+  # Suffix on average filenames that is absent from the frame filenames.
+  # Leave as "" when the stems match exactly.
+  # Example: if averages are "img_avg.mrc" and frames are "img.tif", set "_avg".
+  averages_suffix: ""
+
   # Final tile size in pixels (centred crop)
   crop_x: 3840
   crop_y: 3840

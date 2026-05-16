@@ -129,9 +129,10 @@ def crop(config):
     input_dir      = resolve(data_dir, c.get('input_dir',      'frames/averages'))
     output_dir     = resolve(data_dir, c.get('output_dir',     'cropped'))
     processing_dir = resolve(data_dir, c.get('processing_dir', 'processing/crop'))
-    frames_dir     = resolve(data_dir, c.get('frames_dir',     'frames'))
-    crop_frames    = c.get('crop_frames',    True)
-    crop_x         = c.get('crop_x',         3840)
+    frames_dir      = resolve(data_dir, c.get('frames_dir',      'frames'))
+    averages_suffix = c.get('averages_suffix', '')
+    crop_frames     = c.get('crop_frames',    True)
+    crop_x          = c.get('crop_x',         3840)
     crop_y         = c.get('crop_y',         3840)
     filter_window  = c.get('filter_window',  200)
     mask_threshold = c.get('mask_threshold', 0.5)
@@ -161,7 +162,8 @@ def crop(config):
             trim=trim, crop_x=crop_x, crop_y=crop_y,
         )
         if crop_frames:
-            crop_frames_for_image(image_file, frames_dir, output_frames_dir, x0, x1, y0, y1)
+            crop_frames_for_image(image_file, frames_dir, output_frames_dir, x0, x1, y0, y1,
+                                  averages_suffix=averages_suffix)
 
     click.echo("Crop done.")
     _cleanup_dir(processing_dir, keep_intermediate)
@@ -500,6 +502,9 @@ crop:
 
   crop_frames:    true              # also crop matching raw frame stacks
   frames_dir:     frames            # raw frame MRCs/TIFs (only if crop_frames: true)
+  # Suffix on average filenames absent from frame filenames. Leave "" if stems match.
+  # Example: averages "img_avg.mrc" + frames "img.tif" → averages_suffix: "_avg"
+  averages_suffix: ""
 
   crop_x:         3840              # final tile width in pixels
   crop_y:         3840              # final tile height in pixels
