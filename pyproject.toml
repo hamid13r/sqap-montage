@@ -23,7 +23,8 @@ dependencies = [
 [project.optional-dependencies]
 gpu = [
     "torch>=2.0",
-    "cc3d>=3.0",
+    # cc3d (connected-components-3d) is conda-forge only — not on PyPI.
+    # Install via: micromamba env create -f environment-gpu.yml
 ]
 examples = [
     "pandas",
