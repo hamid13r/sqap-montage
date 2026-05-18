@@ -102,6 +102,12 @@ blend:
   # Example: ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
   ts_filter: []
 
+  # Preview stack — one binned MRC per tilt-series sorted by tilt angle.
+  # Useful for a quick sanity check before running downstream processing.
+  preview:         true
+  preview_binning: 24          # bin factor passed to newstack -bin
+  preview_dir:     blended/previews
+
 # =============================================================================
 # Step 3: remove_gaps — fill blending-seam artefacts with local texture
 # =============================================================================

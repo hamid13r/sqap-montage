@@ -20,6 +20,7 @@ import concurrent.futures
 import glob
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path, PureWindowsPath
 
@@ -189,6 +190,48 @@ def crop(config):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Preview stack helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_preview_stack(ts, averages_dir, preview_dir, binning, processing_dir):
+    """Stack blended averages for one tilt-series sorted by tilt angle.
+
+    Uses IMOD ``newstack -bin`` to assemble and bin in a single call.
+    Output filename: ``{ts}_preview_bin{binning}.mrc``
+    """
+    files = glob.glob(os.path.join(averages_dir, f"{ts}_*_blended.mrc"))
+    if not files:
+        click.echo(f"  [WARNING] No blended averages found for {ts}, skipping preview.")
+        return
+
+    def _angle(f):
+        # filename pattern: {ts}_{angle}_blended.mrc  e.g. ts_001_-52.0_blended.mrc
+        try:
+            return float(Path(f).stem.replace(f"{ts}_", "").replace("_blended", ""))
+        except ValueError:
+            return 0.0
+
+    files_sorted = sorted(files, key=_angle)
+    out = os.path.join(preview_dir, f"{ts}_preview_bin{binning}.mrc")
+    filein = os.path.join(processing_dir, f"{ts}_preview.filein")
+
+    with open(filein, "w") as fh:
+        fh.write(f"{len(files_sorted)}\n")
+        for img in files_sorted:
+            fh.write(f"{img}\n0\n")
+
+    result = subprocess.run(
+        f"newstack -filein {filein} -bin {binning} -output {out}",
+        shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        click.echo(f"  [WARNING] preview newstack failed for {ts}:\n"
+                   f"  {result.stderr.decode().strip()}")
+    else:
+        click.echo(f"  ✓ {os.path.basename(out)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # blend
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -215,6 +258,9 @@ def blend(config):
     blend_frames   = b.get('blend_frames', True)
     num_frames     = b.get('num_frames',   4)
     ts_filter      = b.get('ts_filter',    [])
+    preview        = b.get('preview',         True)
+    preview_bin    = int(b.get('preview_binning', 24))
+    preview_dir    = resolve(data_dir, b.get('preview_dir', 'blended/previews'))
 
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -286,6 +332,12 @@ def blend(config):
                     tqdm_position=1,
                 )
                 overall.update(1)
+
+    if preview:
+        os.makedirs(preview_dir, exist_ok=True)
+        click.echo("\nBuilding preview stacks…")
+        for ts in tqdm(ts_list, desc="Previews"):
+            _make_preview_stack(ts, out_avg, preview_dir, preview_bin, proc_avg)
 
     click.echo("\nBlend done.")
     # Only the two subdirs we created are cleaned up — not the whole processing/ parent
@@ -584,6 +636,11 @@ blend:
   # Process only these tilt-series (leave empty [] for all)
   # ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
   ts_filter: []
+
+  # Preview stack — one binned MRC per tilt-series sorted by tilt angle
+  preview:         true
+  preview_binning: 24          # bin factor passed to newstack -bin
+  preview_dir:     blended/previews
 
 # =============================================================================
 # Step 3: fill — fill blending-seam artefacts with local texture
