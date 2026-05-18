@@ -1,17 +1,14 @@
 name: sqap-montage
 channels:
   - conda-forge
-  - defaults
+  - nodefaults          # never fall back to the Anaconda default channel
 dependencies:
   - python>=3.9
-  # core runtime dependencies (all on conda-forge)
   - click>=8.0
   - mrcfile>=1.4
   - numpy>=1.23
-  - pillow>=9.0
   - tqdm>=4.60
   - pyyaml>=6.0
-  # pip is needed to install the local package
   - pip
   - pip:
       - -e .
