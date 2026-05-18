@@ -9,17 +9,15 @@ dependencies:
   - numpy>=1.23
   - tqdm>=4.60
   - pyyaml>=6.0
-  # PyTorch — conda-forge ships CPU and CUDA builds.
-  # Pin pytorch-cuda to the version matching your driver:
-  #   CUDA 11.8 → pytorch-cuda=11.8
-  #   CUDA 12.1 → pytorch-cuda=12.1
-  #   CUDA 12.4 → pytorch-cuda=12.4
-  # Leave pytorch-cuda unpinned to let conda pick the newest compatible build.
+  # PyTorch with CUDA — conda-forge way:
+  # cuda-version pins which CUDA toolkit build is selected.
+  # Common values: 11.8, 12.1, 12.4
+  # Check your driver with: nvidia-smi (top-right corner shows max CUDA version)
+  - cuda-version=12.1   # <-- change to match your driver
   - pytorch>=2.0
   - torchvision
-  - pytorch-cuda        # omit or pin to force a specific CUDA version
   - connected-components-3d>=3.0
-  - setuptools>=64      # required by pyproject.toml build backend
+  - setuptools>=64
   - pip
   - pip:
       - -e ".[gpu]"
