@@ -195,6 +195,35 @@ def crop_frames_for_image(image_path, frames_dir, output_frames_dir,
 
 
 # ---------------------------------------------------------------------------
+# Parallel worker (must be at module level to be picklable)
+# ---------------------------------------------------------------------------
+
+def _crop_image_worker(args):
+    """Top-level worker for ProcessPoolExecutor.
+
+    ``args`` is a tuple matching the call in ``sqap_montage.py``:
+    (image_file, output_averages_dir, processing_dir, output_frames_dir,
+     frames_dir, crop_frames, averages_suffix,
+     filter_window, mask_threshold, trim, crop_x, crop_y)
+    """
+    (image_file, output_averages_dir, processing_dir, output_frames_dir,
+     frames_dir, crop_frames, averages_suffix,
+     filter_window, mask_threshold, trim, crop_x, crop_y) = args
+
+    x0, x1, y0, y1 = crop_average(
+        image_file, output_averages_dir, processing_dir,
+        filter_size=filter_window, mask_threshold=mask_threshold,
+        trim=trim, crop_x=crop_x, crop_y=crop_y,
+    )
+    if crop_frames:
+        crop_frames_for_image(
+            image_file, frames_dir, output_frames_dir,
+            x0, x1, y0, y1, averages_suffix=averages_suffix,
+        )
+    return os.path.basename(image_file)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 

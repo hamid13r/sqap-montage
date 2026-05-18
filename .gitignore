@@ -29,6 +29,8 @@ cropped/
 frames/
 tiltstacks/
 clipped_mics/
+mdocs/
+blended_mdocs/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

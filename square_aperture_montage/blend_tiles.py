@@ -100,8 +100,16 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         processing_averages_dir, processing_frames_dir,
                         output_averages_dir, output_frames_dir,
                         output_averages_mdoc_dir, output_frames_mdoc_dir,
-                        blend_size, blend_frames, num_frames):
-    """Blend all tiles for one tilt-series."""
+                        blend_size, blend_frames, num_frames,
+                        show_progress=True):
+    """Blend all tiles for one tilt-series.
+
+    Parameters
+    ----------
+    show_progress : bool
+        Show a per-tilt tqdm progress bar.  Set to False when running inside
+        a ProcessPoolExecutor worker to avoid interleaved output.
+    """
     tile_mdoc_paths = sorted(glob.glob(os.path.join(mdoc_dir, f"{ts}_*_*.mrc.mdoc")))
     if not tile_mdoc_paths:
         print(f"  [WARNING] No tile MDOCs found for {ts}, skipping.")
@@ -129,7 +137,8 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
     cropped_averages_abs = os.path.abspath(cropped_averages_dir)
     cropped_frames_abs   = os.path.abspath(cropped_frames_dir)
 
-    for tilt_i in tqdm.trange(num_tilts, desc="  tilts", leave=False):
+    tilt_iter = tqdm.trange(num_tilts, desc="  tilts", leave=False) if show_progress else range(num_tilts)
+    for tilt_i in tilt_iter:
         shifts_list = []
         image_list  = []
         tilt_angle  = None
@@ -260,6 +269,42 @@ def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
         )
 
     print("\nDone.")
+
+
+def _blend_ts_worker(args):
+    """Top-level worker for ProcessPoolExecutor — must be defined at module level
+    so it is picklable.
+
+    ``args`` is a tuple matching the call in ``sqap_montage.py``:
+    (ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
+     processing_averages_dir, processing_frames_dir,
+     output_averages_dir, output_frames_dir,
+     output_averages_mdoc_dir, output_frames_mdoc_dir,
+     blend_size, blend_frames, num_frames)
+    """
+    (ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
+     processing_averages_dir, processing_frames_dir,
+     output_averages_dir, output_frames_dir,
+     output_averages_mdoc_dir, output_frames_mdoc_dir,
+     blend_size, blend_frames, num_frames) = args
+
+    process_tilt_series(
+        ts=ts,
+        mdoc_dir=mdoc_dir,
+        cropped_averages_dir=cropped_averages_dir,
+        cropped_frames_dir=cropped_frames_dir,
+        processing_averages_dir=processing_averages_dir,
+        processing_frames_dir=processing_frames_dir,
+        output_averages_dir=output_averages_dir,
+        output_frames_dir=output_frames_dir,
+        output_averages_mdoc_dir=output_averages_mdoc_dir,
+        output_frames_mdoc_dir=output_frames_mdoc_dir,
+        blend_size=blend_size,
+        blend_frames=blend_frames,
+        num_frames=num_frames,
+        show_progress=False,   # suppress inner tqdm in worker processes
+    )
+    return ts
 
 
 if __name__ == '__main__':
