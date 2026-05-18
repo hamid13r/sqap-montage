@@ -13,7 +13,7 @@ dependencies:
   # cuda-version pins which CUDA toolkit build is selected.
   # Common values: 11.8, 12.1, 12.4
   # Check your driver with: nvidia-smi (top-right corner shows max CUDA version)
-  - cuda-version=12.1   # <-- change to match your driver
+  - cuda-version=12.2
   - pytorch>=2.0
   - torchvision
   - connected-components-3d>=3.0
