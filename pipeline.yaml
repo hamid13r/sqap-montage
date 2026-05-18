@@ -26,6 +26,11 @@ data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
 # Set to true to keep the intermediate .mrc files too.
 keep_intermediate: false
 
+# Number of CPU workers for the crop and blend steps.
+# Set to 1 for sequential processing (safest for debugging).
+# Set to e.g. 4 or 8 to process multiple tiles / tilt-series in parallel.
+num_workers: 1
+
 # Which steps to run. Set any to false to skip.
 steps:
   crop:  true

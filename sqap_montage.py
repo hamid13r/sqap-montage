@@ -27,8 +27,12 @@ import click
 import yaml
 from tqdm import tqdm
 
-from square_aperture_montage.crop_images import crop_average, crop_frames_for_image
-from square_aperture_montage.blend_tiles import discover_tilt_series, process_tilt_series
+from square_aperture_montage.crop_images import (
+    crop_average, crop_frames_for_image, _crop_image_worker,
+)
+from square_aperture_montage.blend_tiles import (
+    discover_tilt_series, process_tilt_series, _blend_ts_worker,
+)
 from square_aperture_montage.mdoc_reader import parse_mdoc_file, write_mdoc_file
 
 
@@ -121,22 +125,23 @@ def crop(config):
 
     Reads the [crop] section of the config file.
     """
-    cfg              = load_config(config)
-    c                = cfg.get('crop', {})
-    data_dir         = cfg.get('data_dir', '.')
+    cfg               = load_config(config)
+    c                 = cfg.get('crop', {})
+    data_dir          = cfg.get('data_dir', '.')
     keep_intermediate = cfg.get('keep_intermediate', False)
+    num_workers       = int(cfg.get('num_workers', 1))
 
-    input_dir      = resolve(data_dir, c.get('input_dir',      'frames/averages'))
-    output_dir     = resolve(data_dir, c.get('output_dir',     'cropped'))
-    processing_dir = resolve(data_dir, c.get('processing_dir', 'processing/crop'))
-    frames_dir      = resolve(data_dir, c.get('frames_dir',      'frames'))
+    input_dir       = resolve(data_dir, c.get('input_dir',      'frames/averages'))
+    output_dir      = resolve(data_dir, c.get('output_dir',     'cropped'))
+    processing_dir  = resolve(data_dir, c.get('processing_dir', 'processing/crop'))
+    frames_dir      = resolve(data_dir, c.get('frames_dir',     'frames'))
     averages_suffix = c.get('averages_suffix', '')
     crop_frames     = c.get('crop_frames',    True)
     crop_x          = c.get('crop_x',         3840)
-    crop_y         = c.get('crop_y',         3840)
-    filter_window  = c.get('filter_window',  200)
-    mask_threshold = c.get('mask_threshold', 0.5)
-    trim           = c.get('trim',           50)
+    crop_y          = c.get('crop_y',         3840)
+    filter_window   = c.get('filter_window',  200)
+    mask_threshold  = c.get('mask_threshold', 0.5)
+    trim            = c.get('trim',           50)
 
     output_averages_dir = os.path.join(output_dir, 'averages')
     output_frames_dir   = os.path.join(output_dir, 'frames')
@@ -155,15 +160,32 @@ def crop(config):
 
     click.echo(f"Found {len(image_files)} image(s) to process.")
 
-    for image_file in tqdm(image_files, desc="Cropping"):
-        x0, x1, y0, y1 = crop_average(
-            image_file, output_averages_dir, processing_dir,
-            filter_size=filter_window, mask_threshold=mask_threshold,
-            trim=trim, crop_x=crop_x, crop_y=crop_y,
-        )
-        if crop_frames:
-            crop_frames_for_image(image_file, frames_dir, output_frames_dir, x0, x1, y0, y1,
-                                  averages_suffix=averages_suffix)
+    if num_workers > 1:
+        click.echo(f"  Workers: {num_workers} (parallel)")
+        task_args = [
+            (image_file, output_averages_dir, processing_dir, output_frames_dir,
+             frames_dir, crop_frames, averages_suffix,
+             filter_window, mask_threshold, trim, crop_x, crop_y)
+            for image_file in image_files
+        ]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(_crop_image_worker, a) for a in task_args]
+            for future in tqdm(concurrent.futures.as_completed(futures),
+                               total=len(image_files), desc="Cropping"):
+                try:
+                    future.result()
+                except Exception as exc:
+                    click.echo(f"  [ERROR] {exc}", err=True)
+    else:
+        for image_file in tqdm(image_files, desc="Cropping"):
+            x0, x1, y0, y1 = crop_average(
+                image_file, output_averages_dir, processing_dir,
+                filter_size=filter_window, mask_threshold=mask_threshold,
+                trim=trim, crop_x=crop_x, crop_y=crop_y,
+            )
+            if crop_frames:
+                crop_frames_for_image(image_file, frames_dir, output_frames_dir, x0, x1, y0, y1,
+                                      averages_suffix=averages_suffix)
 
     click.echo("Crop done.")
     _cleanup_dir(processing_dir, keep_intermediate)
@@ -185,6 +207,7 @@ def blend(config):
     b                 = cfg.get('blend', {})
     data_dir          = cfg.get('data_dir', '.')
     keep_intermediate = cfg.get('keep_intermediate', False)
+    num_workers       = int(cfg.get('num_workers', 1))
 
     mdoc_dir       = resolve(data_dir, b.get('mdoc_dir',       'mdocs'))
     averages_dir   = resolve(data_dir, b.get('averages_dir',   'cropped/averages'))
@@ -222,23 +245,43 @@ def blend(config):
 
     click.echo(f"Found {len(ts_list)} tilt-series to process.")
 
-    for i, ts in enumerate(ts_list):
-        click.echo(f"\n[{i + 1}/{len(ts_list)}] {ts}")
-        process_tilt_series(
-            ts=ts,
-            mdoc_dir=mdoc_dir,
-            cropped_averages_dir=averages_dir,
-            cropped_frames_dir=frames_dir,
-            processing_averages_dir=proc_avg,
-            processing_frames_dir=proc_frm,
-            output_averages_dir=out_avg,
-            output_frames_dir=out_frm,
-            output_averages_mdoc_dir=out_avg_mdoc,
-            output_frames_mdoc_dir=out_frm_mdoc,
-            blend_size=blend_size,
-            blend_frames=blend_frames,
-            num_frames=num_frames,
-        )
+    if num_workers > 1:
+        click.echo(f"  Workers: {num_workers} (parallel)")
+        task_args = [
+            (ts, mdoc_dir, averages_dir, frames_dir,
+             proc_avg, proc_frm, out_avg, out_frm,
+             out_avg_mdoc, out_frm_mdoc,
+             blend_size, blend_frames, num_frames)
+            for ts in ts_list
+        ]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_blend_ts_worker, a): a[0] for a in task_args}
+            for future in tqdm(concurrent.futures.as_completed(futures),
+                               total=len(ts_list), desc="Blending"):
+                ts_done = futures[future]
+                try:
+                    future.result()
+                    click.echo(f"  ✓ {ts_done}")
+                except Exception as exc:
+                    click.echo(f"  [ERROR] {ts_done}: {exc}", err=True)
+    else:
+        for i, ts in enumerate(ts_list):
+            click.echo(f"\n[{i + 1}/{len(ts_list)}] {ts}")
+            process_tilt_series(
+                ts=ts,
+                mdoc_dir=mdoc_dir,
+                cropped_averages_dir=averages_dir,
+                cropped_frames_dir=frames_dir,
+                processing_averages_dir=proc_avg,
+                processing_frames_dir=proc_frm,
+                output_averages_dir=out_avg,
+                output_frames_dir=out_frm,
+                output_averages_mdoc_dir=out_avg_mdoc,
+                output_frames_mdoc_dir=out_frm_mdoc,
+                blend_size=blend_size,
+                blend_frames=blend_frames,
+                num_frames=num_frames,
+            )
 
     click.echo("\nBlend done.")
     # Only the two subdirs we created are cleaned up — not the whole processing/ parent
@@ -270,7 +313,8 @@ def fill(config):
 
     from square_aperture_montage.remove_gaps import (
         process_image, _process_with_gpu,
-        DEFAULT_DETECT_KERNELS, DEFAULT_DILATE_KERNELS, _parse_kernels,
+        DEFAULT_DETECT_KERNELS, DEFAULT_DILATE_KERNELS,
+        _parse_kernels, _parse_index_list,
     )
 
     cfg      = load_config(config)
@@ -491,6 +535,11 @@ data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
 # kept — delete the processing/ folder manually if you want to remove those.
 # Set to true to keep the intermediate .mrc files too.
 keep_intermediate: false
+
+# Number of CPU workers for the crop and blend steps.
+# Set to 1 for sequential processing (safest for debugging).
+# Set to e.g. 4 or 8 to process multiple tiles / tilt-series in parallel.
+num_workers: 1
 
 # =============================================================================
 # Step 1: crop — remove blank aperture borders from each tile image
