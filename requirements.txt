@@ -8,8 +8,7 @@ pyyaml>=6.0
 
 # Optional: gap filling (remove_gaps.py)
 # torch>=2.0
-# cc3d>=3.0
-
+# connected-components-3d
 # Optional: examples / demos
 # pandas
 # matplotlib

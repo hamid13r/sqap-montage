@@ -16,7 +16,7 @@ dependencies:
   - cuda-version=12.2
   - pytorch>=2.0
   - torchvision
-  - connected-components-3d>=3.0
+  - connected-components-3d
   - setuptools>=64
   - pip
   - pip:
