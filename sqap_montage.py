@@ -27,12 +27,8 @@ import click
 import yaml
 from tqdm import tqdm
 
-from square_aperture_montage.crop_images import (
-    crop_average, crop_frames_for_image, _crop_image_worker,
-)
-from square_aperture_montage.blend_tiles import (
-    discover_tilt_series, process_tilt_series, _blend_ts_worker,
-)
+from square_aperture_montage.crop_images import crop_average, crop_frames_for_image
+from square_aperture_montage.blend_tiles import discover_tilt_series, process_tilt_series
 from square_aperture_montage.mdoc_reader import parse_mdoc_file, write_mdoc_file
 
 
@@ -161,6 +157,7 @@ def crop(config):
     click.echo(f"Found {len(image_files)} image(s) to process.")
 
     if num_workers > 1:
+        from square_aperture_montage.crop_images import _crop_image_worker
         click.echo(f"  Workers: {num_workers} (parallel)")
         task_args = [
             (image_file, output_averages_dir, processing_dir, output_frames_dir,
@@ -246,6 +243,7 @@ def blend(config):
     click.echo(f"Found {len(ts_list)} tilt-series to process.")
 
     if num_workers > 1:
+        from square_aperture_montage.blend_tiles import _blend_ts_worker
         click.echo(f"  Workers: {num_workers} (parallel)")
         task_args = [
             (ts, mdoc_dir, averages_dir, frames_dir,
