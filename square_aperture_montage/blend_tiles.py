@@ -18,6 +18,7 @@ Typical usage
 Run ``sam-blend --help`` for all options.
 """
 
+import concurrent.futures
 import glob
 import os
 import sys
@@ -96,21 +97,106 @@ def discover_tilt_series(mdoc_dir):
     return sorted(ts_set)
 
 
+# ---------------------------------------------------------------------------
+# Per-tilt parallel worker — must be at module level to be picklable
+# ---------------------------------------------------------------------------
+
+def _blend_tilt_worker(args):
+    """Blend one tilt angle (newstack → blendmont → clip) for all tiles.
+
+    ``args`` is a tuple:
+    (tilt_i, tile_sections,
+     ts, cropped_averages_abs, cropped_frames_abs,
+     processing_averages_dir, processing_frames_dir,
+     output_averages_dir, output_frames_dir,
+     blend_size, blend_frames, num_frames)
+
+    Returns
+    -------
+    tuple of (tilt_i, tilt_angle, blended_avg_path, blended_frames_path_or_None)
+    """
+    (tilt_i, tile_sections,
+     ts, cropped_averages_abs, cropped_frames_abs,
+     processing_averages_dir, processing_frames_dir,
+     output_averages_dir, output_frames_dir,
+     blend_size, blend_frames, num_frames) = args
+
+    shifts_list = []
+    image_list  = []
+    tilt_angle  = tilt_i   # fallback
+
+    for section in tile_sections:
+        tilt_angle = section.get('TiltAngle', tilt_i)
+        shifts     = section.get('PixelShiftFromCenter', [0, 0])
+        shifts_list.append([int(shifts[0]), int(shifts[1]), 0])
+        subframe   = PureWindowsPath(section.get('SubFramePath', ''))
+        image_list.append(
+            os.path.join(cropped_averages_abs, subframe.name.replace('.tif', '.mrc'))
+        )
+
+    plin_file   = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.plin")
+    plout_file  = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.plout")
+    stack_file  = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.mrc")
+    blended_out = os.path.join(output_averages_dir,     f"{ts}_{tilt_angle}_blended.mrc")
+
+    write_plin(shifts_list, plin_file)
+    imod_newstack(image_list, 0, stack_file, processing_averages_dir)
+    imod_blendmont(stack_file, plin_file, plout_file, blend_size,
+                   blended_out, processing_averages_dir)
+
+    frame_stack_out = None
+    if blend_frames:
+        frame_output_list = []
+        for frame_i in range(num_frames):
+            frame_image_list  = []
+            frame_shifts_list = []
+            for section in tile_sections:
+                shifts   = section.get('PixelShiftFromCenter', [0, 0])
+                frame_shifts_list.append([int(shifts[0]), int(shifts[1]), 0])
+                subframe = PureWindowsPath(section.get('SubFramePath', ''))
+                frame_image_list.append(
+                    os.path.join(cropped_frames_abs, subframe.name.replace('.tif', '.mrc'))
+                )
+            frame_stack   = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}.mrc")
+            frame_plin    = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}.plin")
+            frame_plout   = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}.plout")
+            frame_blended = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}_blended.mrc")
+
+            write_plin(frame_shifts_list, frame_plin)
+            imod_newstack(frame_image_list, frame_i, frame_stack, processing_frames_dir)
+            imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
+                           frame_blended, processing_frames_dir)
+            frame_output_list.append(os.path.abspath(frame_blended))
+
+        frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
+        imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir)
+
+    return (tilt_i, tilt_angle,
+            os.path.abspath(blended_out),
+            os.path.abspath(frame_stack_out) if frame_stack_out else None)
+
+
+# ---------------------------------------------------------------------------
+# Main tilt-series processing function
+# ---------------------------------------------------------------------------
+
 def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         processing_averages_dir, processing_frames_dir,
                         output_averages_dir, output_frames_dir,
                         output_averages_mdoc_dir, output_frames_mdoc_dir,
                         blend_size, blend_frames, num_frames,
-                        show_progress=True, tqdm_position=0):
+                        num_workers=1, show_progress=True, tqdm_position=0):
     """Blend all tiles for one tilt-series.
 
     Parameters
     ----------
+    num_workers : int
+        Number of parallel workers for per-tilt blending.
+        1 = sequential (default). >1 = parallel via ProcessPoolExecutor.
     show_progress : bool
         Show a per-tilt tqdm progress bar.
     tqdm_position : int
-        tqdm ``position`` argument for the inner bar — use 1 when an outer
-        bar sits at position 0 (sequential mode with two nested bars).
+        tqdm ``position`` for the inner bar (use 1 when an outer bar is at 0).
     """
     tile_mdoc_paths = sorted(glob.glob(os.path.join(mdoc_dir, f"{ts}_*_*.mrc.mdoc")))
     if not tile_mdoc_paths:
@@ -135,82 +221,57 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
 
     num_tilts = len(tile_mdocs[0]['z_sections'])
     num_tiles = len(tile_mdocs)
-    print(f"  {ts}: {num_tiles} tiles × {num_tilts} tilts")
+    print(f"  {ts}: {num_tiles} tiles × {num_tilts} tilts  (workers={num_workers})")
 
     cropped_averages_abs = os.path.abspath(cropped_averages_dir)
     cropped_frames_abs   = os.path.abspath(cropped_frames_dir)
 
+    # Build one args-tuple per tilt angle
+    task_args = [
+        (tilt_i,
+         [tm['z_sections'][tilt_i] for tm in tile_mdocs],
+         ts, cropped_averages_abs, cropped_frames_abs,
+         processing_averages_dir, processing_frames_dir,
+         output_averages_dir, output_frames_dir,
+         blend_size, blend_frames, num_frames)
+        for tilt_i in range(num_tilts)
+    ]
+
     if show_progress:
-        tilt_pbar = tqdm.tqdm(range(num_tilts),
-                              desc=f"  {ts}",
-                              position=tqdm_position,
-                              leave=True)
+        pbar = tqdm.tqdm(total=num_tilts,
+                         desc=f"  {ts}",
+                         position=tqdm_position,
+                         leave=True)
     else:
-        tilt_pbar = None
+        pbar = None
 
-    tilt_iter = tilt_pbar if tilt_pbar is not None else range(num_tilts)
-    for tilt_i in tilt_iter:
-        shifts_list = []
-        image_list  = []
-        tilt_angle  = None
+    results = {}   # tilt_i → (tilt_angle, blended_avg, blended_frames)
 
-        for tile_mdoc in tile_mdocs:
-            section    = tile_mdoc['z_sections'][tilt_i]
-            tilt_angle = section.get('TiltAngle', tilt_i)
-            shifts     = section.get('PixelShiftFromCenter', [0, 0])
-            shifts_list.append([int(shifts[0]), int(shifts[1]), 0])
-            subframe   = PureWindowsPath(section.get('SubFramePath', ''))
-            image_list.append(
-                os.path.join(cropped_averages_abs, subframe.name.replace('.tif', '.mrc'))
-            )
+    if num_workers > 1:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_blend_tilt_worker, a): a[0] for a in task_args}
+            for future in concurrent.futures.as_completed(futures):
+                tilt_i, tilt_angle, avg_path, frm_path = future.result()
+                results[tilt_i] = (tilt_angle, avg_path, frm_path)
+                if pbar is not None:
+                    pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
+                    pbar.update(1)
+    else:
+        for args in task_args:
+            tilt_i, tilt_angle, avg_path, frm_path = _blend_tilt_worker(args)
+            results[tilt_i] = (tilt_angle, avg_path, frm_path)
+            if pbar is not None:
+                pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
+                pbar.update(1)
 
-        if tilt_pbar is not None:
-            tilt_pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
+    if pbar is not None:
+        pbar.close()
 
-        plin_file   = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.plin")
-        plout_file  = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.plout")
-        stack_file  = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.mrc")
-        blended_out = os.path.join(output_averages_dir, f"{ts}_{tilt_angle}_blended.mrc")
-
-        write_plin(shifts_list, plin_file)
-        imod_newstack(image_list, 0, stack_file, processing_averages_dir)
-        imod_blendmont(stack_file, plin_file, plout_file, blend_size,
-                       blended_out, processing_averages_dir)
-        output_mdoc['z_sections'][tilt_i]['SubFramePath'] = os.path.abspath(blended_out)
-
-        if blend_frames and output_frame_mdoc is not None:
-            frame_output_list = []
-
-            for frame_i in range(num_frames):
-                frame_image_list  = []
-                frame_shifts_list = []
-
-                for tile_mdoc in tile_mdocs:
-                    section = tile_mdoc['z_sections'][tilt_i]
-                    shifts  = section.get('PixelShiftFromCenter', [0, 0])
-                    frame_shifts_list.append([int(shifts[0]), int(shifts[1]), 0])
-                    subframe = PureWindowsPath(section.get('SubFramePath', ''))
-                    frame_image_list.append(
-                        os.path.join(cropped_frames_abs, subframe.name.replace('.tif', '.mrc'))
-                    )
-
-                frame_stack   = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}.mrc")
-                frame_plin    = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}.plin")
-                frame_plout   = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}.plout")
-                frame_blended = os.path.join(processing_frames_dir, f"{ts}_{tilt_angle}_frame{frame_i}_blended.mrc")
-
-                write_plin(frame_shifts_list, frame_plin)
-                imod_newstack(frame_image_list, frame_i, frame_stack, processing_frames_dir)
-                imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
-                               frame_blended, processing_frames_dir)
-                frame_output_list.append(os.path.abspath(frame_blended))
-
-            frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
-            imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir)
-            output_frame_mdoc['z_sections'][tilt_i]['SubFramePath'] = os.path.abspath(frame_stack_out)
-
-    if tilt_pbar is not None:
-        tilt_pbar.close()
+    # Update mdoc with output paths (must happen after all workers finish)
+    for tilt_i, (tilt_angle, avg_path, frm_path) in results.items():
+        output_mdoc['z_sections'][tilt_i]['SubFramePath'] = avg_path
+        if blend_frames and output_frame_mdoc is not None and frm_path:
+            output_frame_mdoc['z_sections'][tilt_i]['SubFramePath'] = frm_path
 
     write_mdoc_file(output_mdoc,
                     os.path.join(output_averages_mdoc_dir, f"{ts}_blended.mrc.mdoc"))
@@ -286,43 +347,6 @@ def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
         )
 
     print("\nDone.")
-
-
-def _blend_ts_worker(args):
-    """Top-level worker for ProcessPoolExecutor — must be defined at module level
-    so it is picklable.
-
-    ``args`` is a tuple matching the call in ``sqap_montage.py``:
-    (ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
-     processing_averages_dir, processing_frames_dir,
-     output_averages_dir, output_frames_dir,
-     output_averages_mdoc_dir, output_frames_mdoc_dir,
-     blend_size, blend_frames, num_frames)
-    """
-    (ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
-     processing_averages_dir, processing_frames_dir,
-     output_averages_dir, output_frames_dir,
-     output_averages_mdoc_dir, output_frames_mdoc_dir,
-     blend_size, blend_frames, num_frames) = args
-
-    process_tilt_series(
-        ts=ts,
-        mdoc_dir=mdoc_dir,
-        cropped_averages_dir=cropped_averages_dir,
-        cropped_frames_dir=cropped_frames_dir,
-        processing_averages_dir=processing_averages_dir,
-        processing_frames_dir=processing_frames_dir,
-        output_averages_dir=output_averages_dir,
-        output_frames_dir=output_frames_dir,
-        output_averages_mdoc_dir=output_averages_mdoc_dir,
-        output_frames_mdoc_dir=output_frames_mdoc_dir,
-        blend_size=blend_size,
-        blend_frames=blend_frames,
-        num_frames=num_frames,
-        show_progress=True,    # each worker shows its own per-tilt bar
-        tqdm_position=0,       # bars may interleave in the terminal — that's fine
-    )
-    return ts
 
 
 if __name__ == '__main__':

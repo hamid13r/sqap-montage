@@ -287,33 +287,13 @@ def blend(config):
             sys.exit(1)
 
     click.echo(f"Found {len(ts_list)} tilt-series to process.")
-
     if num_workers > 1:
-        from square_aperture_montage.blend_tiles import _blend_ts_worker
-        click.echo(f"  Workers: {num_workers} (parallel)")
-        task_args = [
-            (ts, mdoc_dir, averages_dir, frames_dir,
-             proc_avg, proc_frm, out_avg, out_frm,
-             out_avg_mdoc, out_frm_mdoc,
-             blend_size, blend_frames, num_frames)
-            for ts in ts_list
-        ]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(_blend_ts_worker, a): a[0] for a in task_args}
-            with tqdm(total=len(ts_list), desc="Overall", position=0, leave=True) as overall:
-                for future in concurrent.futures.as_completed(futures):
-                    ts_done = futures[future]
-                    try:
-                        future.result()
-                        overall.set_postfix(last=ts_done)
-                        overall.update(1)
-                    except Exception as exc:
-                        click.echo(f"  [ERROR] {ts_done}: {exc}", err=True)
-                        overall.update(1)
-    else:
-        with tqdm(total=len(ts_list), desc="Overall", position=0, leave=True) as overall:
-            for ts in ts_list:
-                overall.set_postfix(ts=ts)
+        click.echo(f"  Workers: {num_workers} per tilt-series (tilts blended in parallel)")
+
+    with tqdm(total=len(ts_list), desc="Overall", position=0, leave=True) as overall:
+        for ts in ts_list:
+            overall.set_postfix(ts=ts)
+            try:
                 process_tilt_series(
                     ts=ts,
                     mdoc_dir=mdoc_dir,
@@ -328,10 +308,13 @@ def blend(config):
                     blend_size=blend_size,
                     blend_frames=blend_frames,
                     num_frames=num_frames,
+                    num_workers=num_workers,
                     show_progress=True,
                     tqdm_position=1,
                 )
-                overall.update(1)
+            except Exception as exc:
+                click.echo(f"  [ERROR] {ts}: {exc}", err=True)
+            overall.update(1)
 
     if preview:
         os.makedirs(preview_dir, exist_ok=True)
