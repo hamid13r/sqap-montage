@@ -254,32 +254,38 @@ def blend(config):
         ]
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_blend_ts_worker, a): a[0] for a in task_args}
-            for future in tqdm(concurrent.futures.as_completed(futures),
-                               total=len(ts_list), desc="Blending"):
-                ts_done = futures[future]
-                try:
-                    future.result()
-                    click.echo(f"  ✓ {ts_done}")
-                except Exception as exc:
-                    click.echo(f"  [ERROR] {ts_done}: {exc}", err=True)
+            with tqdm(total=len(ts_list), desc="Overall", position=0, leave=True) as overall:
+                for future in concurrent.futures.as_completed(futures):
+                    ts_done = futures[future]
+                    try:
+                        future.result()
+                        overall.set_postfix(last=ts_done)
+                        overall.update(1)
+                    except Exception as exc:
+                        click.echo(f"  [ERROR] {ts_done}: {exc}", err=True)
+                        overall.update(1)
     else:
-        for i, ts in enumerate(ts_list):
-            click.echo(f"\n[{i + 1}/{len(ts_list)}] {ts}")
-            process_tilt_series(
-                ts=ts,
-                mdoc_dir=mdoc_dir,
-                cropped_averages_dir=averages_dir,
-                cropped_frames_dir=frames_dir,
-                processing_averages_dir=proc_avg,
-                processing_frames_dir=proc_frm,
-                output_averages_dir=out_avg,
-                output_frames_dir=out_frm,
-                output_averages_mdoc_dir=out_avg_mdoc,
-                output_frames_mdoc_dir=out_frm_mdoc,
-                blend_size=blend_size,
-                blend_frames=blend_frames,
-                num_frames=num_frames,
-            )
+        with tqdm(total=len(ts_list), desc="Overall", position=0, leave=True) as overall:
+            for ts in ts_list:
+                overall.set_postfix(ts=ts)
+                process_tilt_series(
+                    ts=ts,
+                    mdoc_dir=mdoc_dir,
+                    cropped_averages_dir=averages_dir,
+                    cropped_frames_dir=frames_dir,
+                    processing_averages_dir=proc_avg,
+                    processing_frames_dir=proc_frm,
+                    output_averages_dir=out_avg,
+                    output_frames_dir=out_frm,
+                    output_averages_mdoc_dir=out_avg_mdoc,
+                    output_frames_mdoc_dir=out_frm_mdoc,
+                    blend_size=blend_size,
+                    blend_frames=blend_frames,
+                    num_frames=num_frames,
+                    show_progress=True,
+                    tqdm_position=1,
+                )
+                overall.update(1)
 
     click.echo("\nBlend done.")
     # Only the two subdirs we created are cleaned up — not the whole processing/ parent

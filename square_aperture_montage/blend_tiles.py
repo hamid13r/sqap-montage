@@ -101,14 +101,16 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         output_averages_dir, output_frames_dir,
                         output_averages_mdoc_dir, output_frames_mdoc_dir,
                         blend_size, blend_frames, num_frames,
-                        show_progress=True):
+                        show_progress=True, tqdm_position=0):
     """Blend all tiles for one tilt-series.
 
     Parameters
     ----------
     show_progress : bool
-        Show a per-tilt tqdm progress bar.  Set to False when running inside
-        a ProcessPoolExecutor worker to avoid interleaved output.
+        Show a per-tilt tqdm progress bar.
+    tqdm_position : int
+        tqdm ``position`` argument for the inner bar — use 1 when an outer
+        bar sits at position 0 (sequential mode with two nested bars).
     """
     tile_mdoc_paths = sorted(glob.glob(os.path.join(mdoc_dir, f"{ts}_*_*.mrc.mdoc")))
     if not tile_mdoc_paths:
@@ -132,12 +134,21 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
         return
 
     num_tilts = len(tile_mdocs[0]['z_sections'])
-    print(f"  {len(tile_mdocs)} tiles × {num_tilts} tilts")
+    num_tiles = len(tile_mdocs)
+    print(f"  {ts}: {num_tiles} tiles × {num_tilts} tilts")
 
     cropped_averages_abs = os.path.abspath(cropped_averages_dir)
     cropped_frames_abs   = os.path.abspath(cropped_frames_dir)
 
-    tilt_iter = tqdm.trange(num_tilts, desc="  tilts", leave=False) if show_progress else range(num_tilts)
+    if show_progress:
+        tilt_pbar = tqdm.tqdm(range(num_tilts),
+                              desc=f"  {ts}",
+                              position=tqdm_position,
+                              leave=True)
+    else:
+        tilt_pbar = None
+
+    tilt_iter = tilt_pbar if tilt_pbar is not None else range(num_tilts)
     for tilt_i in tilt_iter:
         shifts_list = []
         image_list  = []
@@ -152,6 +163,9 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
             image_list.append(
                 os.path.join(cropped_averages_abs, subframe.name.replace('.tif', '.mrc'))
             )
+
+        if tilt_pbar is not None:
+            tilt_pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
 
         plin_file   = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.plin")
         plout_file  = os.path.join(processing_averages_dir, f"{ts}_{tilt_angle}.plout")
@@ -194,6 +208,9 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
             frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
             imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir)
             output_frame_mdoc['z_sections'][tilt_i]['SubFramePath'] = os.path.abspath(frame_stack_out)
+
+    if tilt_pbar is not None:
+        tilt_pbar.close()
 
     write_mdoc_file(output_mdoc,
                     os.path.join(output_averages_mdoc_dir, f"{ts}_blended.mrc.mdoc"))
@@ -302,7 +319,8 @@ def _blend_ts_worker(args):
         blend_size=blend_size,
         blend_frames=blend_frames,
         num_frames=num_frames,
-        show_progress=False,   # suppress inner tqdm in worker processes
+        show_progress=True,    # each worker shows its own per-tilt bar
+        tqdm_position=0,       # bars may interleave in the terminal — that's fine
     )
     return ts
 
