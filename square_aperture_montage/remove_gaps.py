@@ -69,13 +69,22 @@ def remove_small_objects(mask_np, min_size=200):
 
 
 def build_gap_mask(mrc_tensor, device, detect_kernels=None, dilate_kernels=None, sigma=5.0):
-    """Detect seam/gap regions as a binary mask using gradient + intensity outliers."""
+    """Detect seam/gap regions as a binary mask using gradient + intensity outliers.
+
+    Accepts either a 2-D (H, W) tensor (single average) or a 3-D (N, H, W)
+    tensor (frame stack).  For frame stacks the frames are averaged before
+    detection so the mask is derived from the cleaner projected image.
+    """
     if detect_kernels is None:
         detect_kernels = [(301, 3), (3, 301)]
     if dilate_kernels is None:
         dilate_kernels = [(101, 3), (3, 101), (15, 15)]
 
-    projected = torch.mean(mrc_tensor, dim=0)
+    # Project to 2-D regardless of input dimensionality
+    if mrc_tensor.ndim == 2:
+        projected = mrc_tensor
+    else:
+        projected = torch.mean(mrc_tensor, dim=0)
     batch     = projected.unsqueeze(0).unsqueeze(0)
 
     kx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
@@ -112,7 +121,17 @@ def build_gap_mask(mrc_tensor, device, detect_kernels=None, dilate_kernels=None,
 
 
 def fill_gaps(mrc_image_np, mask_np, tile_num=8):
-    """Fill masked pixels with random local tissue samples."""
+    """Fill masked pixels with random local tissue samples.
+
+    Accepts either a 2-D (H, W) or 3-D (N, H, W) array; always returns
+    the same shape as the input.
+    """
+    if mrc_image_np.ndim == 2:
+        mrc_image_np = mrc_image_np[np.newaxis]   # treat as 1 frame
+        squeeze_output = True
+    else:
+        squeeze_output = False
+
     h, w   = mrc_image_np.shape[1], mrc_image_np.shape[2]
     output = np.zeros_like(mrc_image_np, dtype=np.int8)
 
@@ -137,7 +156,7 @@ def fill_gaps(mrc_image_np, mask_np, tile_num=8):
                     frame_out[gap_sel] = 0
         output[frame_i] = frame_out
 
-    return output
+    return output[0] if squeeze_output else output
 
 
 # Default kernel shapes used by build_gap_mask
@@ -256,7 +275,9 @@ def process_image(image_path, output_dir, mask_dir, device,
     with mrcfile.open(image_path, mode='r') as mrc:
         mrc_np = np.array(mrc.data)
 
-    h, w = mrc_np.shape[-2], mrc_np.shape[-1]
+    # Detect dimensionality: 2-D = single average, 3-D = frame stack
+    is_2d = mrc_np.ndim == 2
+    h, w  = mrc_np.shape[-2], mrc_np.shape[-1]
 
     if seam_rows or seam_cols:
         # Manual mode — no detection needed, just build mask from given positions
@@ -266,7 +287,7 @@ def process_image(image_path, output_dir, mask_dir, device,
             device, dilate_kernels=dilate_kernels,
         )
     else:
-        # Auto-detect mode
+        # Auto-detect mode — project to 2-D for mask detection
         mrc_tensor = torch.from_numpy(mrc_np).float().to(device)
         mrc_tensor = (mrc_tensor - mrc_tensor.mean()) / (mrc_tensor.std() + 1e-6)
         mask_np = build_gap_mask(mrc_tensor, device, sigma=sigma,
@@ -276,7 +297,8 @@ def process_image(image_path, output_dir, mask_dir, device,
     write_mrc(mask_path, mask_np)
     output_np = fill_gaps(mrc_np, mask_np, tile_num=tile_num)
     write_mrc(out_path, output_np)
-    print(f"  Filled: {os.path.basename(image_path)}")
+    mode_str = "2D average" if is_2d else f"3D stack ({mrc_np.shape[0]} frames)"
+    print(f"  Filled [{mode_str}]: {os.path.basename(image_path)}")
 
 
 def _process_with_gpu(args):
