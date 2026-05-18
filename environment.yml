@@ -9,6 +9,7 @@ dependencies:
   - numpy>=1.23
   - tqdm>=4.60
   - pyyaml>=6.0
+  - setuptools>=64      # required by pyproject.toml build backend
   - pip
   - pip:
       - -e .

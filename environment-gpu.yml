@@ -19,6 +19,7 @@ dependencies:
   - torchvision
   - pytorch-cuda        # omit or pin to force a specific CUDA version
   - connected-components-3d>=3.0
+  - setuptools>=64      # required by pyproject.toml build backend
   - pip
   - pip:
       - -e ".[gpu]"
