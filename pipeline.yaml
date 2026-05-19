@@ -98,6 +98,17 @@ blend:
   # Number of raw frames per exposure (used when blend_frames: true)
   num_frames: 4
 
+  # Normalize off-center tile histograms to match the center tile (true/false).
+  # Each off-center tile is linearly rescaled so its mean and standard deviation
+  # match those of the center (_0_0) tile before blending. This reduces intensity
+  # seams in the blended output caused by uneven illumination across positions.
+  #
+  # normalize_averages_to_center: apply normalization to the average (motion-corrected) images.
+  # normalize_frames_to_center:   apply normalization to the per-frame stacks
+  #                               (only relevant when blend_frames: true).
+  normalize_averages_to_center: false
+  normalize_frames_to_center: false
+
   # Process only these tilt-series names (leave empty [] to process all)
   # Example: ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
   ts_filter: []

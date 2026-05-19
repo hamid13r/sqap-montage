@@ -73,17 +73,21 @@ DEFAULT_CONFIG = {
 
     # ── Step 2: blend_tiles ──────────────────────────────────────────────────
     "blend": {
-        "mdoc_dir":        "mdocs",
-        "averages_dir":    "cropped/averages",
-        "frames_dir":      "cropped/frames",
-        "output_dir":      "blended",
-        "processing_dir":  "processing",
-        "blend_size":      11664,
-        "num_frames":      4,
-        "blend_frames":    True,
+        "mdoc_dir":              "mdocs",
+        "averages_dir":          "cropped/averages",
+        "frames_dir":            "cropped/frames",
+        "output_dir":            "blended",
+        "processing_dir":        "processing",
+        "blend_size":            11664,
+        "num_frames":            4,
+        "blend_frames":          True,
+        # Rescale off-center average tiles to match center tile histogram before blending
+        "normalize_averages_to_center": False,
+        # Rescale off-center frame tiles to match center tile histogram before blending
+        "normalize_frames_to_center":   False,
         # List specific tilt-series names to process, or leave empty for all:
         # ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
-        "ts_filter":       [],
+        "ts_filter":             [],
     },
 
     # ── Step 3: remove_gaps ──────────────────────────────────────────────────
@@ -310,6 +314,8 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
             blend_size=c["blend_size"],
             blend_frames=c["blend_frames"],
             num_frames=c["num_frames"],
+            normalize_averages_to_center=c.get("normalize_averages_to_center", False),
+            normalize_frames_to_center=c.get("normalize_frames_to_center", False),
         )
 
     logger.info(f"✓ blend completed in {time.time() - t0:.1f}s")
