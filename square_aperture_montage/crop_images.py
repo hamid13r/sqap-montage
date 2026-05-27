@@ -72,18 +72,48 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
     Returns
     -------
     tuple of (x_start, x_end, y_start, y_end)
-    """
-    x_profile = np.convolve(
-        np.sum(mrc_image, axis=0) / np.max(np.sum(mrc_image, axis=0)),
-        np.ones(filter_size) / filter_size, mode='same',
-    )
-    y_profile = np.convolve(
-        np.sum(mrc_image, axis=1) / np.max(np.sum(mrc_image, axis=1)),
-        np.ones(filter_size) / filter_size, mode='same',
-    )
 
-    x_lit = np.where((x_profile / np.max(x_profile)) > mask_threshold)[0]
-    y_lit = np.where((y_profile / np.max(y_profile)) > mask_threshold)[0]
+    Raises
+    ------
+    ValueError
+        If the image has no positive signal, or no region exceeds
+        ``mask_threshold`` (no aperture detected).
+    """
+    # Cast to float64 once. MRC averages are often int16/float16; summing a
+    # 4096-wide row in the native dtype overflows and poisons the profile
+    # with NaN/garbage values.
+    img = np.asarray(mrc_image, dtype=np.float64)
+
+    col_sum = np.sum(img, axis=0)
+    row_sum = np.sum(img, axis=1)
+
+    col_max = col_sum.max() if col_sum.size else 0.0
+    row_max = row_sum.max() if row_sum.size else 0.0
+    if (not np.isfinite(col_max) or not np.isfinite(row_max)
+            or col_max <= 0 or row_max <= 0):
+        raise ValueError(
+            "Image has no positive signal — cannot detect aperture boundaries."
+        )
+
+    kernel = np.ones(filter_size) / filter_size
+    x_profile = np.convolve(col_sum / col_max, kernel, mode='same')
+    y_profile = np.convolve(row_sum / row_max, kernel, mode='same')
+
+    xp_max = x_profile.max()
+    yp_max = y_profile.max()
+    if xp_max <= 0 or yp_max <= 0:
+        raise ValueError(
+            "Smoothed intensity profile is non-positive — check input image."
+        )
+
+    x_lit = np.where((x_profile / xp_max) > mask_threshold)[0]
+    y_lit = np.where((y_profile / yp_max) > mask_threshold)[0]
+
+    if x_lit.size == 0 or y_lit.size == 0:
+        raise ValueError(
+            f"No region above mask_threshold={mask_threshold} found. "
+            "Try lowering --mask-threshold or check the input image."
+        )
 
     center_x = (x_lit[0] + trim + x_lit[-1] - trim) // 2
     center_y = (y_lit[0] + trim + y_lit[-1] - trim) // 2
@@ -113,9 +143,14 @@ def crop_average(image_path, output_averages_dir, processing_dir,
     with mrcfile.open(image_path, mode='r') as mrc:
         mrc_image = mrc.data.copy()
 
-    x_start, x_end, y_start, y_end = detect_crop_boundaries(
-        mrc_image, filter_size, mask_threshold, trim, crop_x, crop_y
-    )
+    try:
+        x_start, x_end, y_start, y_end = detect_crop_boundaries(
+            mrc_image, filter_size, mask_threshold, trim, crop_x, crop_y
+        )
+    except ValueError as e:
+        # Attach the offending file path so parallel workers produce a
+        # message you can actually act on.
+        raise ValueError(f"{image_path}: {e}") from e
 
     cropped = mrc_image[y_start:y_end, x_start:x_end]
     with mrcfile.new(os.path.join(output_averages_dir, image_name), overwrite=True) as mrc_out:
