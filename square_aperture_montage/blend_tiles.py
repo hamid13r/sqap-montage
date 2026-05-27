@@ -144,44 +144,64 @@ def write_fileinlist(image_list, frame_num, output_file):
 
 
 def imod_newstack(image_list, frame_num, stack_out, processing_dir):
-    """Stack images with IMOD newstack."""
+    """Stack images with IMOD newstack.
+
+    Returns
+    -------
+    tuple of (CompletedProcess, str)
+        The subprocess result and the exact shell command that was run, so
+        the caller can record it for the per-tilt-series sh_files log.
+    """
     stem = Path(stack_out).stem
     filein = os.path.join(processing_dir, f"{stem}_{frame_num}.filein")
     write_fileinlist(image_list, frame_num, filein)
+    cmd = f"newstack -filein {filein} -output {stack_out}"
     result = subprocess.run(
-        f"newstack -filein {filein} -output {stack_out}",
+        cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
     if result.returncode != 0:
         print(f"  [WARNING] newstack failed for {stack_out}:\n"
               f"  {result.stderr.decode().strip()}")
-    return result
+    return result, cmd
 
 
 def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
                    blended_output, processing_dir):
-    """Blend a montage stack and resize with IMOD blendmont + clip."""
+    """Blend a montage stack and resize with IMOD blendmont + clip.
+
+    Returns
+    -------
+    tuple of (CompletedProcess, CompletedProcess, list[str])
+        The blendmont result, the clip result, and the two shell command
+        strings (blendmont then clip) for the caller to record in the
+        per-tilt-series sh_files log.
+    """
     rootname = Path(blended_output).stem
     intermediate = os.path.join(processing_dir, f"{rootname}_raw.mrc")
 
-    result_blend = subprocess.run(
+    blend_cmd = (
         f"blendmont -imin {stk_file} -plin {plin_file} "
         f"-imout {intermediate} "
         f"-roo {os.path.join(processing_dir, rootname)} "
-        f"-al {plout_file} -adj -shift",
+        f"-al {plout_file} -adj -shift"
+    )
+    result_blend = subprocess.run(
+        blend_cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
     if result_blend.returncode != 0:
         print(f"  [WARNING] blendmont failed:\n  {result_blend.stderr.decode().strip()}")
 
+    clip_cmd = f"clip resize -ox {blend_size} -oy {blend_size} {intermediate} {blended_output}"
     result_clip = subprocess.run(
-        f"clip resize -ox {blend_size} -oy {blend_size} {intermediate} {blended_output}",
+        clip_cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
     if result_clip.returncode != 0:
         print(f"  [WARNING] clip failed:\n  {result_clip.stderr.decode().strip()}")
 
-    return result_blend, result_clip
+    return result_blend, result_clip, [blend_cmd, clip_cmd]
 
 
 def discover_tilt_series(mdoc_dir):
@@ -210,7 +230,11 @@ def _blend_tilt_worker(args):
 
     Returns
     -------
-    tuple of (tilt_i, tilt_angle, blended_avg_path, blended_frames_path_or_None)
+    tuple of (tilt_i, tilt_angle, blended_avg_path,
+              blended_frames_path_or_None, commands)
+        ``commands`` is a list of the shell command strings that were issued
+        for this tilt, in the order they ran. The caller writes them to the
+        per-tilt-series sh_files log.
     """
     (tilt_i, tile_sections,
      ts, cropped_averages_abs, cropped_frames_abs,
@@ -222,6 +246,7 @@ def _blend_tilt_worker(args):
     shifts_list = []
     image_list  = []
     tilt_angle  = tilt_i   # fallback
+    commands    = []       # IMOD commands issued for this tilt, in order
 
     for section in tile_sections:
         tilt_angle = section.get('TiltAngle', tilt_i)
@@ -246,9 +271,11 @@ def _blend_tilt_worker(args):
     blended_out = os.path.join(output_averages_dir,     f"{ts}_{tilt_angle}_blended.mrc")
 
     write_plin(shifts_list, plin_file)
-    imod_newstack(image_list, 0, stack_file, processing_averages_dir)
-    imod_blendmont(stack_file, plin_file, plout_file, blend_size,
-                   blended_out, processing_averages_dir)
+    _, ns_cmd = imod_newstack(image_list, 0, stack_file, processing_averages_dir)
+    commands.append(ns_cmd)
+    _, _, bm_cmds = imod_blendmont(stack_file, plin_file, plout_file, blend_size,
+                                   blended_out, processing_averages_dir)
+    commands.extend(bm_cmds)
 
     frame_stack_out = None
     if blend_frames:
@@ -283,17 +310,22 @@ def _blend_tilt_worker(args):
                 frame_num_for_stack = frame_i
 
             write_plin(frame_shifts_list, frame_plin)
-            imod_newstack(frame_image_list, frame_num_for_stack, frame_stack, processing_frames_dir)
-            imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
-                           frame_blended, processing_frames_dir)
+            _, ns_cmd = imod_newstack(frame_image_list, frame_num_for_stack,
+                                      frame_stack, processing_frames_dir)
+            commands.append(ns_cmd)
+            _, _, bm_cmds = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
+                                           frame_blended, processing_frames_dir)
+            commands.extend(bm_cmds)
             frame_output_list.append(os.path.abspath(frame_blended))
 
         frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
-        imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir)
+        _, ns_cmd = imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir)
+        commands.append(ns_cmd)
 
     return (tilt_i, tilt_angle,
             os.path.abspath(blended_out),
-            os.path.abspath(frame_stack_out) if frame_stack_out else None)
+            os.path.abspath(frame_stack_out) if frame_stack_out else None,
+            commands)
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +339,8 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         blend_size, blend_frames, num_frames,
                         normalize_averages_to_center=False,
                         normalize_frames_to_center=False,
-                        num_workers=1, show_progress=True, tqdm_position=0):
+                        num_workers=1, show_progress=True, tqdm_position=0,
+                        sh_files_dir=None):
     """Blend all tiles for one tilt-series.
 
     Parameters
@@ -326,7 +359,20 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
         Show a per-tilt tqdm progress bar.
     tqdm_position : int
         tqdm ``position`` for the inner bar (use 1 when an outer bar is at 0).
+    sh_files_dir : str or None
+        Directory where a per-tilt-series ``{ts}.sh`` script is written
+        containing every IMOD command (newstack / blendmont / clip) issued
+        for that tilt-series, ordered by tilt index. When None (default),
+        a sibling ``sh_files/`` of ``processing_averages_dir`` is used so
+        the file ends up at ``processing/sh_files/{ts}.sh``.
     """
+    if sh_files_dir is None:
+        sh_files_dir = os.path.join(
+            os.path.dirname(os.path.abspath(processing_averages_dir)),
+            'sh_files',
+        )
+    os.makedirs(sh_files_dir, exist_ok=True)
+
     tile_mdoc_paths = sorted(glob.glob(os.path.join(mdoc_dir, f"{ts}_*_*.mrc.mdoc")))
     if not tile_mdoc_paths:
         print(f"  [WARNING] No tile MDOCs found for {ts}, skipping.")
@@ -375,21 +421,21 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
     else:
         pbar = None
 
-    results = {}   # tilt_i → (tilt_angle, blended_avg, blended_frames)
+    results = {}   # tilt_i → (tilt_angle, blended_avg, blended_frames, commands)
 
     if num_workers > 1:
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_blend_tilt_worker, a): a[0] for a in task_args}
             for future in concurrent.futures.as_completed(futures):
-                tilt_i, tilt_angle, avg_path, frm_path = future.result()
-                results[tilt_i] = (tilt_angle, avg_path, frm_path)
+                tilt_i, tilt_angle, avg_path, frm_path, commands = future.result()
+                results[tilt_i] = (tilt_angle, avg_path, frm_path, commands)
                 if pbar is not None:
                     pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
                     pbar.update(1)
     else:
         for args in task_args:
-            tilt_i, tilt_angle, avg_path, frm_path = _blend_tilt_worker(args)
-            results[tilt_i] = (tilt_angle, avg_path, frm_path)
+            tilt_i, tilt_angle, avg_path, frm_path, commands = _blend_tilt_worker(args)
+            results[tilt_i] = (tilt_angle, avg_path, frm_path, commands)
             if pbar is not None:
                 pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
                 pbar.update(1)
@@ -397,8 +443,31 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
     if pbar is not None:
         pbar.close()
 
+    # Write a re-runnable shell script of every IMOD command issued for
+    # this tilt-series, ordered by tilt index. Useful both for reproducing
+    # the run by hand and for debugging when an IMOD step fails.
+    sh_path = os.path.join(sh_files_dir, f"{ts}.sh")
+    with open(sh_path, 'w') as f:
+        f.write("#!/usr/bin/env bash\n")
+        f.write(f"# IMOD commands for tilt-series: {ts}\n")
+        f.write("# Generated by sqap-montage blend step.\n")
+        f.write("# Re-run from the same working directory used for the original blend.\n")
+        f.write("# The .plin and .filein files these commands reference are written\n")
+        f.write("# by sqap-montage and must exist (or be re-created) before re-running.\n")
+        f.write("set -e\n\n")
+        for tilt_i in sorted(results.keys()):
+            tilt_angle, _, _, commands = results[tilt_i]
+            f.write(f"# ── Tilt {tilt_i}: angle={tilt_angle} ──\n")
+            for cmd in commands:
+                f.write(f"{cmd}\n")
+            f.write("\n")
+    try:
+        os.chmod(sh_path, 0o755)
+    except OSError:
+        pass
+
     # Update mdoc with output paths (must happen after all workers finish)
-    for tilt_i, (tilt_angle, avg_path, frm_path) in results.items():
+    for tilt_i, (tilt_angle, avg_path, frm_path, _commands) in results.items():
         output_mdoc['z_sections'][tilt_i]['SubFramePath'] = avg_path
         if blend_frames and output_frame_mdoc is not None and frm_path:
             output_frame_mdoc['z_sections'][tilt_i]['SubFramePath'] = frm_path
