@@ -118,12 +118,29 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
     center_x = (x_lit[0] + trim + x_lit[-1] - trim) // 2
     center_y = (y_lit[0] + trim + y_lit[-1] - trim) // 2
 
-    x_start = center_x - crop_x // 2
-    x_end   = center_x + crop_x // 2
-    y_start = center_y - crop_y // 2
-    y_end   = center_y + crop_y // 2
+    x_start = int(center_x - crop_x // 2)
+    x_end   = int(center_x + crop_x // 2)
+    y_start = int(center_y - crop_y // 2)
+    y_end   = int(center_y + crop_y // 2)
 
-    return x_start, x_end, y_start, y_end
+    # Clamp to image extent. When the detected aperture sits close to an
+    # edge, the requested crop_x/crop_y can spill outside the array — without
+    # clamping the downstream slice would silently produce a smaller-than-
+    # expected crop or, with negative starts, wrap from the far edge.
+    height, width = img.shape[-2:]
+    x_start_c = max(0, x_start)
+    x_end_c   = min(int(width),  x_end)
+    y_start_c = max(0, y_start)
+    y_end_c   = min(int(height), y_end)
+    if (x_start_c, x_end_c, y_start_c, y_end_c) != (x_start, x_end, y_start, y_end):
+        print(
+            f"  [WARNING] crop bounds clamped to image extent: "
+            f"x[{x_start}→{x_start_c}, {x_end}→{x_end_c}] "
+            f"y[{y_start}→{y_start_c}, {y_end}→{y_end_c}] "
+            f"(image {width}×{height})"
+        )
+
+    return x_start_c, x_end_c, y_start_c, y_end_c
 
 
 # ---------------------------------------------------------------------------

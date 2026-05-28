@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "square-aperture-montage"
-version = "0.1.4"
+version = "0.1.5"
 description = "Stitch 3×3 cryo-EM tilt-series tiles into one giant tilt-series using IMOD"
 readme = "README.md"
 license = { text = "MIT" }
