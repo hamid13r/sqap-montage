@@ -261,6 +261,18 @@ def blend(config):
     preview        = b.get('preview',         True)
     preview_bin    = int(b.get('preview_binning', 24))
     preview_dir    = resolve(data_dir, b.get('preview_dir', 'blended/previews'))
+    # Optional user-set locations for the per-IMOD-command log files and the
+    # per-tilt-series shell scripts. Either may be omitted from the config —
+    # process_tilt_series then defaults them to <processing_dir>/log and
+    # <processing_dir>/sh_files respectively.
+    log_dir_cfg      = b.get('log_dir', None)
+    sh_files_dir_cfg = b.get('sh_files_dir', None)
+    log_dir      = resolve(data_dir, log_dir_cfg)      if log_dir_cfg      else None
+    sh_files_dir = resolve(data_dir, sh_files_dir_cfg) if sh_files_dir_cfg else None
+    # Snap PixelShiftFromCenter values to a uniform grid before writing
+    # the .plin file. blendmont requires uniform spacing; SerialEM mdocs
+    # can write values that are 1–2 px off. Default True.
+    snap_shifts_to_grid = bool(b.get('snap_shifts_to_grid', True))
 
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -311,6 +323,9 @@ def blend(config):
                     num_workers=num_workers,
                     show_progress=True,
                     tqdm_position=1,
+                    sh_files_dir=sh_files_dir,
+                    log_dir=log_dir,
+                    snap_shifts_to_grid=snap_shifts_to_grid,
                 )
             except Exception as exc:
                 click.echo(f"  [ERROR] {ts}: {exc}", err=True)
@@ -624,6 +639,21 @@ blend:
   preview:         true
   preview_binning: 24          # bin factor passed to newstack -bin
   preview_dir:     blended/previews
+
+  # Optional overrides — both default to siblings of processing_dir
+  # (i.e. processing/log/ and processing/sh_files/). Set to a path to relocate.
+  # log_dir holds one log per IMOD command, named {ts}_{tilt}_{command}.log,
+  # with the executed command, return code, and full stdout + stderr.
+  # sh_files_dir holds one re-runnable shell script per tilt-series.
+  # log_dir:      processing/log
+  # sh_files_dir: processing/sh_files
+
+  # SerialEM occasionally writes PixelShiftFromCenter values that are 1–2 px
+  # off the regular grid (e.g. 3682 and 7365 instead of 3682 and 7364).
+  # blendmont rejects non-uniform spacings, so each shift is snapped to the
+  # nearest integer multiple of the per-axis step before being written to
+  # the .plin file. Set to false to feed blendmont the raw mdoc values.
+  snap_shifts_to_grid: true
 
 # =============================================================================
 # Step 3: fill — fill blending-seam artefacts with local texture

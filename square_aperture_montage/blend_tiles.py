@@ -127,6 +127,63 @@ def _normalize_tiles_to_center(image_list, shifts_list, processing_dir, prefix,
     return new_image_list
 
 
+def _snap_shifts_to_uniform(shifts_list):
+    """Snap each ``[x, y, z]`` shift to the nearest integer multiple of the
+    smallest non-zero step per axis.
+
+    SerialEM mdocs sometimes report ``PixelShiftFromCenter`` values that
+    are 1–2 px off from a uniform grid (e.g. ``3682`` and ``7365`` instead
+    of ``3682`` and ``7364``). IMOD's ``blendmont`` requires uniformly-
+    spaced shifts, so each shift is snapped to ``round(s / step) * step``
+    per axis. The step is taken as the smallest non-zero absolute shift in
+    that axis, which corresponds to the 1-step-from-center tiles in a
+    regular montage. Axes with all-zero shifts (1-D montage) are passed
+    through unchanged.
+
+    Returns a new list — the input is not modified.
+    """
+    if not shifts_list:
+        return shifts_list
+
+    abs_x = [abs(s[0]) for s in shifts_list if s[0]]
+    abs_y = [abs(s[1]) for s in shifts_list if s[1]]
+    step_x = min(abs_x) if abs_x else 0
+    step_y = min(abs_y) if abs_y else 0
+
+    snapped = []
+    for s in shifts_list:
+        nx = int(round(s[0] / step_x)) * step_x if step_x else int(s[0])
+        ny = int(round(s[1] / step_y)) * step_y if step_y else int(s[1])
+        z  = s[2] if len(s) > 2 else 0
+        snapped.append([nx, ny, z])
+    return snapped
+
+
+def _write_command_log(log_path, cmd, result):
+    """Write one IMOD command's cmd string, return code, stdout, and stderr
+    to ``log_path``.
+
+    Called once per IMOD invocation when a log directory is configured.
+    Silently no-ops if ``log_path`` is None so callers don't need to guard.
+    """
+    if log_path is None:
+        return
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    stdout = result.stdout.decode(errors='replace') if result.stdout else ''
+    stderr = result.stderr.decode(errors='replace') if result.stderr else ''
+    with open(log_path, 'w') as f:
+        f.write(f"# Command:\n{cmd}\n\n")
+        f.write(f"# Return code: {result.returncode}\n\n")
+        f.write("# ── stdout ──────────────────────────────────────────────────\n")
+        f.write(stdout)
+        if stdout and not stdout.endswith('\n'):
+            f.write('\n')
+        f.write("\n# ── stderr ──────────────────────────────────────────────────\n")
+        f.write(stderr)
+        if stderr and not stderr.endswith('\n'):
+            f.write('\n')
+
+
 def write_plin(shifts_list, output_file):
     """Write pixel-shift list to a .plin file for blendmont."""
     with open(output_file, 'w') as f:
@@ -143,8 +200,14 @@ def write_fileinlist(image_list, frame_num, output_file):
             f.write(f"{frame_num}\n")
 
 
-def imod_newstack(image_list, frame_num, stack_out, processing_dir):
+def imod_newstack(image_list, frame_num, stack_out, processing_dir, log_path=None):
     """Stack images with IMOD newstack.
+
+    Parameters
+    ----------
+    log_path : str or None
+        If given, write the executed command, return code, stdout, and stderr
+        to this file.
 
     Returns
     -------
@@ -160,6 +223,7 @@ def imod_newstack(image_list, frame_num, stack_out, processing_dir):
         cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
+    _write_command_log(log_path, cmd, result)
     if result.returncode != 0:
         print(f"  [WARNING] newstack failed for {stack_out}:\n"
               f"  {result.stderr.decode().strip()}")
@@ -167,8 +231,17 @@ def imod_newstack(image_list, frame_num, stack_out, processing_dir):
 
 
 def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
-                   blended_output, processing_dir):
+                   blended_output, processing_dir,
+                   blend_log_path=None, clip_log_path=None):
     """Blend a montage stack and resize with IMOD blendmont + clip.
+
+    Parameters
+    ----------
+    blend_log_path : str or None
+        If given, write the blendmont command, return code, stdout, and stderr
+        to this file.
+    clip_log_path : str or None
+        Same as ``blend_log_path`` but for the clip resize step.
 
     Returns
     -------
@@ -190,6 +263,7 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         blend_cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
+    _write_command_log(blend_log_path, blend_cmd, result_blend)
     if result_blend.returncode != 0:
         print(f"  [WARNING] blendmont failed:\n  {result_blend.stderr.decode().strip()}")
 
@@ -198,6 +272,7 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         clip_cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
+    _write_command_log(clip_log_path, clip_cmd, result_clip)
     if result_clip.returncode != 0:
         print(f"  [WARNING] clip failed:\n  {result_clip.stderr.decode().strip()}")
 
@@ -226,7 +301,16 @@ def _blend_tilt_worker(args):
      processing_averages_dir, processing_frames_dir,
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
-     normalize_averages_to_center, normalize_frames_to_center)
+     normalize_averages_to_center, normalize_frames_to_center,
+     log_dir, snap_shifts_to_grid)
+
+    ``log_dir`` is the directory where one log file per IMOD command is
+    written, named ``{ts}_{tilt}_{command}.log``. Pass None to disable.
+
+    ``snap_shifts_to_grid`` (bool) controls whether the per-tile pixel
+    shifts read from the mdocs are snapped to a uniform grid before being
+    written to the .plin file. blendmont requires uniform spacing, but
+    SerialEM mdocs can be 1–2 px off; default True.
 
     Returns
     -------
@@ -241,7 +325,8 @@ def _blend_tilt_worker(args):
      processing_averages_dir, processing_frames_dir,
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
-     normalize_averages_to_center, normalize_frames_to_center) = args
+     normalize_averages_to_center, normalize_frames_to_center,
+     log_dir, snap_shifts_to_grid) = args
 
     shifts_list = []
     image_list  = []
@@ -257,6 +342,20 @@ def _blend_tilt_worker(args):
             os.path.join(cropped_averages_abs, subframe.name.replace('.tif', '.mrc'))
         )
 
+    # SerialEM occasionally writes PixelShiftFromCenter values that are
+    # 1–2 px off the regular grid (e.g. 3682 and 7365 instead of 3682 and
+    # 7364). blendmont rejects non-uniform spacings, so snap each tile's
+    # shift to the nearest multiple of the per-axis step.
+    if snap_shifts_to_grid:
+        shifts_list = _snap_shifts_to_uniform(shifts_list)
+
+    # Helper closure: produce {ts}_{tilt}_{command}.log path under log_dir,
+    # or None when logging is disabled.
+    def _log(name):
+        if log_dir is None:
+            return None
+        return os.path.join(log_dir, f"{ts}_{tilt_angle}_{name}.log")
+
     # Optionally normalise off-center averages to match the centre tile histogram
     if normalize_averages_to_center:
         image_list = _normalize_tiles_to_center(
@@ -271,21 +370,24 @@ def _blend_tilt_worker(args):
     blended_out = os.path.join(output_averages_dir,     f"{ts}_{tilt_angle}_blended.mrc")
 
     write_plin(shifts_list, plin_file)
-    _, ns_cmd = imod_newstack(image_list, 0, stack_file, processing_averages_dir)
+    _, ns_cmd = imod_newstack(image_list, 0, stack_file, processing_averages_dir,
+                              log_path=_log('newstack'))
     commands.append(ns_cmd)
     _, _, bm_cmds = imod_blendmont(stack_file, plin_file, plout_file, blend_size,
-                                   blended_out, processing_averages_dir)
+                                   blended_out, processing_averages_dir,
+                                   blend_log_path=_log('blendmont'),
+                                   clip_log_path=_log('clip'))
     commands.extend(bm_cmds)
 
     frame_stack_out = None
     if blend_frames:
         frame_output_list = []
         for frame_i in range(num_frames):
-            frame_image_list  = []
-            frame_shifts_list = []
+            # Per-frame shifts are identical to the averages shifts (already
+            # snapped above), so we only need to (re)build the frame file
+            # paths here.
+            frame_image_list = []
             for section in tile_sections:
-                shifts   = section.get('PixelShiftFromCenter', [0, 0])
-                frame_shifts_list.append([int(shifts[0]), int(shifts[1]), 0])
                 subframe = PureWindowsPath(section.get('SubFramePath', ''))
                 frame_image_list.append(
                     os.path.join(cropped_frames_abs, subframe.name.replace('.tif', '.mrc'))
@@ -300,7 +402,7 @@ def _blend_tilt_worker(args):
             # centre tile's same slice, write single-slice temp files
             if normalize_frames_to_center:
                 frame_image_list = _normalize_tiles_to_center(
-                    frame_image_list, frame_shifts_list,
+                    frame_image_list, shifts_list,
                     processing_frames_dir,
                     f"{ts}_{tilt_angle}_frame{frame_i}_norm",
                     frame_idx=frame_i,
@@ -309,17 +411,21 @@ def _blend_tilt_worker(args):
             else:
                 frame_num_for_stack = frame_i
 
-            write_plin(frame_shifts_list, frame_plin)
+            write_plin(shifts_list, frame_plin)
             _, ns_cmd = imod_newstack(frame_image_list, frame_num_for_stack,
-                                      frame_stack, processing_frames_dir)
+                                      frame_stack, processing_frames_dir,
+                                      log_path=_log(f'frame{frame_i}_newstack'))
             commands.append(ns_cmd)
             _, _, bm_cmds = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
-                                           frame_blended, processing_frames_dir)
+                                           frame_blended, processing_frames_dir,
+                                           blend_log_path=_log(f'frame{frame_i}_blendmont'),
+                                           clip_log_path=_log(f'frame{frame_i}_clip'))
             commands.extend(bm_cmds)
             frame_output_list.append(os.path.abspath(frame_blended))
 
         frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
-        _, ns_cmd = imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir)
+        _, ns_cmd = imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir,
+                                  log_path=_log('frames_newstack'))
         commands.append(ns_cmd)
 
     return (tilt_i, tilt_angle,
@@ -340,7 +446,8 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         normalize_averages_to_center=False,
                         normalize_frames_to_center=False,
                         num_workers=1, show_progress=True, tqdm_position=0,
-                        sh_files_dir=None):
+                        sh_files_dir=None, log_dir=None,
+                        snap_shifts_to_grid=True):
     """Blend all tiles for one tilt-series.
 
     Parameters
@@ -365,6 +472,18 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
         for that tilt-series, ordered by tilt index. When None (default),
         a sibling ``sh_files/`` of ``processing_averages_dir`` is used so
         the file ends up at ``processing/sh_files/{ts}.sh``.
+    log_dir : str or None
+        Directory where one log file per IMOD command is written, named
+        ``{ts}_{tilt}_{command}.log``. Each log contains the executed
+        command, return code, and full stdout + stderr. When None (default),
+        a sibling ``log/`` of ``processing_averages_dir`` is used so files
+        end up at ``processing/log/``.
+    snap_shifts_to_grid : bool
+        When True (default), snap each tile's ``PixelShiftFromCenter`` to
+        the nearest integer multiple of the per-axis step before writing
+        the .plin file. SerialEM can write shifts that are 1–2 px off the
+        regular grid (e.g. 3682 and 7365 instead of 3682 and 7364), and
+        blendmont refuses to run on non-uniform spacings.
     """
     if sh_files_dir is None:
         sh_files_dir = os.path.join(
@@ -372,6 +491,13 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
             'sh_files',
         )
     os.makedirs(sh_files_dir, exist_ok=True)
+
+    if log_dir is None:
+        log_dir = os.path.join(
+            os.path.dirname(os.path.abspath(processing_averages_dir)),
+            'log',
+        )
+    os.makedirs(log_dir, exist_ok=True)
 
     tile_mdoc_paths = sorted(glob.glob(os.path.join(mdoc_dir, f"{ts}_*_*.mrc.mdoc")))
     if not tile_mdoc_paths:
@@ -409,7 +535,8 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
          processing_averages_dir, processing_frames_dir,
          output_averages_dir, output_frames_dir,
          blend_size, blend_frames, num_frames,
-         normalize_averages_to_center, normalize_frames_to_center)
+         normalize_averages_to_center, normalize_frames_to_center,
+         log_dir, snap_shifts_to_grid)
         for tilt_i in range(num_tilts)
     ]
 
@@ -507,9 +634,22 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                     'Only applies when --blend-frames is set.'))
 @click.option('--ts', 'ts_filter', default=None, multiple=True,
               help='Process only these tilt-series names (repeatable). Defaults to all.')
+@click.option('--log-dir', default=None, show_default=True,
+              help=('Directory for per-IMOD-command log files '
+                    '({ts}_{tilt}_{command}.log). Defaults to '
+                    '<processing-dir>/log.'))
+@click.option('--sh-files-dir', default=None, show_default=True,
+              help=('Directory for per-tilt-series shell scripts '
+                    '({ts}.sh). Defaults to <processing-dir>/sh_files.'))
+@click.option('--snap-shifts-to-grid/--no-snap-shifts-to-grid',
+              default=True, show_default=True,
+              help=('Snap PixelShiftFromCenter values to a uniform grid '
+                    'before writing the .plin file. blendmont requires '
+                    'uniform spacing; SerialEM mdocs can be 1–2 px off.'))
 def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
          blend_size, blend_frames, num_frames,
-         normalize_averages_to_center, normalize_frames_to_center, ts_filter):
+         normalize_averages_to_center, normalize_frames_to_center, ts_filter,
+         log_dir, sh_files_dir, snap_shifts_to_grid):
     """Blend 3×3 montage tile images into a single giant tilt-series."""
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -555,6 +695,9 @@ def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
             num_frames=num_frames,
             normalize_averages_to_center=normalize_averages_to_center,
             normalize_frames_to_center=normalize_frames_to_center,
+            sh_files_dir=sh_files_dir,
+            log_dir=log_dir,
+            snap_shifts_to_grid=snap_shifts_to_grid,
         )
 
     print("\nDone.")

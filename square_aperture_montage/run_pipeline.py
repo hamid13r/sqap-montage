@@ -88,6 +88,16 @@ DEFAULT_CONFIG = {
         # List specific tilt-series names to process, or leave empty for all:
         # ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
         "ts_filter":             [],
+        # Optional overrides — both default to siblings of processing_dir.
+        # log_dir holds one log file per IMOD command (newstack / blendmont
+        # / clip) named {ts}_{tilt}_{command}.log with full stdout + stderr.
+        # sh_files_dir holds one re-runnable shell script per tilt-series.
+        "log_dir":               "",
+        "sh_files_dir":          "",
+        # Snap PixelShiftFromCenter to a uniform grid before writing .plin.
+        # SerialEM mdocs are sometimes 1–2 px off (e.g. 3682 and 7365 instead
+        # of 3682 and 7364); blendmont rejects non-uniform spacings.
+        "snap_shifts_to_grid":   True,
     },
 
     # ── Step 3: remove_gaps ──────────────────────────────────────────────────
@@ -271,6 +281,12 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
     proc_avg     = os.path.join(c["processing_dir"], "blending_averages")
     proc_frm     = os.path.join(c["processing_dir"], "blending_frames")
 
+    # Optional user overrides. When omitted, process_tilt_series defaults
+    # them to <processing_dir>/log and <processing_dir>/sh_files.
+    log_dir      = c.get("log_dir")      or None
+    sh_files_dir = c.get("sh_files_dir") or None
+    snap_shifts_to_grid = bool(c.get("snap_shifts_to_grid", True))
+
     if dry_run:
         logger.info("[DRY RUN] blend step:")
         for k, v in c.items():
@@ -316,6 +332,9 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
             num_frames=c["num_frames"],
             normalize_averages_to_center=c.get("normalize_averages_to_center", False),
             normalize_frames_to_center=c.get("normalize_frames_to_center", False),
+            sh_files_dir=sh_files_dir,
+            log_dir=log_dir,
+            snap_shifts_to_grid=snap_shifts_to_grid,
         )
 
     logger.info(f"✓ blend completed in {time.time() - t0:.1f}s")
