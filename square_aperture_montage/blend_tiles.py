@@ -232,8 +232,9 @@ def imod_newstack(image_list, frame_num, stack_out, processing_dir, log_path=Non
 
 def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
                    blended_output, processing_dir,
-                   blend_log_path=None, clip_log_path=None):
-    """Blend a montage stack and resize with IMOD blendmont + clip.
+                   blend_log_path=None, clip_log_path=None,
+                   run_clip=True):
+    """Blend a montage stack and optionally resize with IMOD blendmont + clip.
 
     Parameters
     ----------
@@ -242,22 +243,30 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         to this file.
     clip_log_path : str or None
         Same as ``blend_log_path`` but for the clip resize step.
+    run_clip : bool
+        When True (default), run ``clip resize`` after blendmont to crop the
+        output to ``blend_size × blend_size``. When False, blendmont writes
+        directly to ``blended_output`` and the clip step is skipped.
 
     Returns
     -------
-    tuple of (CompletedProcess, CompletedProcess, list[str])
-        The blendmont result, the clip result, and the two shell command
-        strings (blendmont then clip) for the caller to record in the
-        per-tilt-series sh_files log.
+    tuple of (CompletedProcess, CompletedProcess or None, list[str])
+        The blendmont result, the clip result (None if run_clip is False),
+        and the two shell command strings (blendmont then clip) for the
+        caller to record in the per-tilt-series sh_files log.
     """
     rootname = Path(blended_output).stem
-    intermediate = os.path.join(processing_dir, f"{rootname}_raw.mrc")
+
+    if run_clip:
+        imout = os.path.join(processing_dir, f"{rootname}_raw.mrc")
+    else:
+        imout = blended_output
 
     blend_cmd = (
         f"blendmont -imin {stk_file} -plin {plin_file} "
-        f"-imout {intermediate} "
+        f"-imout {imout} "
         f"-roo {os.path.join(processing_dir, rootname)} "
-        f"-al {plout_file} -adj -shift"
+        f"-al {plout_file} -adj -shift -sl -intensity 2"
     )
     result_blend = subprocess.run(
         blend_cmd,
@@ -267,14 +276,18 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
     if result_blend.returncode != 0:
         print(f"  [WARNING] blendmont failed:\n  {result_blend.stderr.decode().strip()}")
 
-    clip_cmd = f"clip resize -ox {blend_size} -oy {blend_size} {intermediate} {blended_output}"
-    result_clip = subprocess.run(
-        clip_cmd,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
-    )
-    _write_command_log(clip_log_path, clip_cmd, result_clip)
-    if result_clip.returncode != 0:
-        print(f"  [WARNING] clip failed:\n  {result_clip.stderr.decode().strip()}")
+    if run_clip:
+        clip_cmd = f"clip resize -ox {blend_size} -oy {blend_size} {imout} {blended_output}"
+        result_clip = subprocess.run(
+            clip_cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
+        )
+        _write_command_log(clip_log_path, clip_cmd, result_clip)
+        if result_clip.returncode != 0:
+            print(f"  [WARNING] clip failed:\n  {result_clip.stderr.decode().strip()}")
+    else:
+        result_clip = None
+        clip_cmd = "clip step is disabled"
 
     return result_blend, result_clip, [blend_cmd, clip_cmd]
 
@@ -302,7 +315,7 @@ def _blend_tilt_worker(args):
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
      normalize_averages_to_center, normalize_frames_to_center,
-     log_dir, snap_shifts_to_grid)
+     log_dir, snap_shifts_to_grid, run_clip)
 
     ``log_dir`` is the directory where one log file per IMOD command is
     written, named ``{ts}_{tilt}_{command}.log``. Pass None to disable.
@@ -326,7 +339,7 @@ def _blend_tilt_worker(args):
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
      normalize_averages_to_center, normalize_frames_to_center,
-     log_dir, snap_shifts_to_grid) = args
+     log_dir, snap_shifts_to_grid, run_clip) = args
 
     shifts_list = []
     image_list  = []
@@ -376,7 +389,8 @@ def _blend_tilt_worker(args):
     _, _, bm_cmds = imod_blendmont(stack_file, plin_file, plout_file, blend_size,
                                    blended_out, processing_averages_dir,
                                    blend_log_path=_log('blendmont'),
-                                   clip_log_path=_log('clip'))
+                                   clip_log_path=_log('clip'),
+                                   run_clip=run_clip)
     commands.extend(bm_cmds)
 
     frame_stack_out = None
@@ -419,7 +433,8 @@ def _blend_tilt_worker(args):
             _, _, bm_cmds = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
                                            frame_blended, processing_frames_dir,
                                            blend_log_path=_log(f'frame{frame_i}_blendmont'),
-                                           clip_log_path=_log(f'frame{frame_i}_clip'))
+                                           clip_log_path=_log(f'frame{frame_i}_clip'),
+                                           run_clip=run_clip)
             commands.extend(bm_cmds)
             frame_output_list.append(os.path.abspath(frame_blended))
 
@@ -447,7 +462,7 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         normalize_frames_to_center=False,
                         num_workers=1, show_progress=True, tqdm_position=0,
                         sh_files_dir=None, log_dir=None,
-                        snap_shifts_to_grid=True):
+                        snap_shifts_to_grid=True, run_clip=True):
     """Blend all tiles for one tilt-series.
 
     Parameters
@@ -536,7 +551,7 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
          output_averages_dir, output_frames_dir,
          blend_size, blend_frames, num_frames,
          normalize_averages_to_center, normalize_frames_to_center,
-         log_dir, snap_shifts_to_grid)
+         log_dir, snap_shifts_to_grid, run_clip)
         for tilt_i in range(num_tilts)
     ]
 

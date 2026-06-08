@@ -90,6 +90,7 @@ blend:
   processing_dir: processing
 
   # Output image edge length in pixels after IMOD clip resize
+  run_clip: true
   blend_size: 11664
 
   # Also blend per-frame stacks in addition to averages (true/false)

@@ -286,6 +286,7 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
     log_dir      = c.get("log_dir")      or None
     sh_files_dir = c.get("sh_files_dir") or None
     snap_shifts_to_grid = bool(c.get("snap_shifts_to_grid", True))
+    run_clip = bool(c.get("run_clip", True))
 
     if dry_run:
         logger.info("[DRY RUN] blend step:")
@@ -335,6 +336,7 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
             sh_files_dir=sh_files_dir,
             log_dir=log_dir,
             snap_shifts_to_grid=snap_shifts_to_grid,
+            run_clip=run_clip,
         )
 
     logger.info(f"✓ blend completed in {time.time() - t0:.1f}s")

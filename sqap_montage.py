@@ -273,6 +273,7 @@ def blend(config):
     # the .plin file. blendmont requires uniform spacing; SerialEM mdocs
     # can write values that are 1–2 px off. Default True.
     snap_shifts_to_grid = bool(b.get('snap_shifts_to_grid', True))
+    run_clip = bool(b.get('run_clip', True))
 
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -326,6 +327,7 @@ def blend(config):
                     sh_files_dir=sh_files_dir,
                     log_dir=log_dir,
                     snap_shifts_to_grid=snap_shifts_to_grid,
+                    run_clip=run_clip,
                 )
             except Exception as exc:
                 click.echo(f"  [ERROR] {ts}: {exc}", err=True)
