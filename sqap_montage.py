@@ -257,6 +257,10 @@ def blend(config):
     blend_size     = b.get('blend_size',   11664)
     blend_frames   = b.get('blend_frames', True)
     num_frames     = b.get('num_frames',   4)
+    # Linearly rescale off-center tiles to match the center tile histogram
+    # before blending (averages and/or per-frame stacks).
+    normalize_averages_to_center = bool(b.get('normalize_averages_to_center', False))
+    normalize_frames_to_center   = bool(b.get('normalize_frames_to_center',   False))
     ts_filter      = b.get('ts_filter',    [])
     preview        = b.get('preview',         True)
     preview_bin    = int(b.get('preview_binning', 24))
@@ -323,6 +327,8 @@ def blend(config):
                     blend_size=blend_size,
                     blend_frames=blend_frames,
                     num_frames=num_frames,
+                    normalize_averages_to_center=normalize_averages_to_center,
+                    normalize_frames_to_center=normalize_frames_to_center,
                     num_workers=num_workers,
                     show_progress=True,
                     tqdm_position=1,
@@ -634,6 +640,13 @@ blend:
   blend_size:     11664             # output image edge length after clip resize
   blend_frames:   true              # also blend per-frame stacks
   num_frames:     4                 # raw frames per exposure (used with blend_frames)
+
+  # Linearly rescale each off-center tile so its mean and standard deviation
+  # match the center (_0_0) tile before blending, reducing intensity seams.
+  #   normalize_averages_to_center: apply to the average (motion-corrected) images
+  #   normalize_frames_to_center:   apply to the per-frame stacks (blend_frames only)
+  normalize_averages_to_center: false
+  normalize_frames_to_center:   false
 
   # Process only these tilt-series (leave empty [] for all)
   # ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
