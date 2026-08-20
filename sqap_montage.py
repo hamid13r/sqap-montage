@@ -273,6 +273,9 @@ def blend(config):
     # the .plin file. blendmont requires uniform spacing; SerialEM mdocs
     # can write values that are 1–2 px off. Default True.
     snap_shifts_to_grid = bool(b.get('snap_shifts_to_grid', True))
+    # How much of the averages' blendmont solution the per-frame blends reuse:
+    # "none" (default), "edges" (-oldedge), or "edges-xcorr" (-oldedge -readxcorr).
+    frame_edge_reuse = b.get('frame_edge_reuse', 'none')
 
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -326,6 +329,7 @@ def blend(config):
                     sh_files_dir=sh_files_dir,
                     log_dir=log_dir,
                     snap_shifts_to_grid=snap_shifts_to_grid,
+                    frame_edge_reuse=frame_edge_reuse,
                 )
             except Exception as exc:
                 click.echo(f"  [ERROR] {ts}: {exc}", err=True)
@@ -654,6 +658,17 @@ blend:
   # nearest integer multiple of the per-axis step before being written to
   # the .plin file. Set to false to feed blendmont the raw mdoc values.
   snap_shifts_to_grid: true
+
+  # How much of the averages' blendmont solution the per-frame blends reuse.
+  # By default each frame recomputes its own edge functions and cross-
+  # correlations from scratch, which is slow and can drift from the average.
+  #   none        — recompute every frame independently (current behaviour)
+  #   edges       — reuse the averages' .xef/.yef edge functions (-oldedge)
+  #   edges-xcorr — additionally reuse the .ecd cross-correlations
+  #                 (-oldedge -readxcorr); frames inherit the average's
+  #                 geometry exactly (maximum consistency, biggest speedup)
+  # Only relevant when blend_frames: true.
+  frame_edge_reuse: none
 
 # =============================================================================
 # Step 3: fill — fill blending-seam artefacts with local texture

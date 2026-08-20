@@ -21,6 +21,7 @@ Run ``sam-blend --help`` for all options.
 import concurrent.futures
 import glob
 import os
+import shutil
 import sys
 from pathlib import Path, PureWindowsPath
 import subprocess
@@ -29,6 +30,14 @@ import click
 import tqdm
 
 from .mdoc_reader import parse_mdoc_file, write_mdoc_file
+
+
+# Valid values for the --frame-edge-reuse option (see imod_blendmont /
+# _blend_tilt_worker). Controls how much of the averages' blendmont solution
+# the per-frame blends reuse: 'none' recomputes everything (current default),
+# 'edges' reuses the .xef/.yef edge functions, 'edges-xcorr' additionally
+# reuses the .ecd cross-correlation displacements.
+FRAME_EDGE_REUSE_CHOICES = ('none', 'edges', 'edges-xcorr')
 
 
 def _normalize_tiles_to_center(image_list, shifts_list, processing_dir, prefix,
@@ -232,7 +241,8 @@ def imod_newstack(image_list, frame_num, stack_out, processing_dir, log_path=Non
 
 def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
                    blended_output, processing_dir,
-                   blend_log_path=None, clip_log_path=None):
+                   blend_log_path=None, clip_log_path=None,
+                   old_edge=False, read_xcorr=False):
     """Blend a montage stack and resize with IMOD blendmont + clip.
 
     Parameters
@@ -242,6 +252,15 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         to this file.
     clip_log_path : str or None
         Same as ``blend_log_path`` but for the clip resize step.
+    old_edge : bool
+        When True, pass ``-oldedge`` so blendmont reuses existing edge
+        functions (the ``.xef``/``.yef`` files under the ``-roo`` root)
+        instead of recomputing them. blendmont silently falls back to
+        computing them if the files do not exist.
+    read_xcorr : bool
+        When True, pass ``-readxcorr`` so blendmont reads the overlap-zone
+        displacements from an existing ``.ecd`` file instead of computing
+        cross-correlations.
 
     Returns
     -------
@@ -253,11 +272,17 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
     rootname = Path(blended_output).stem
     intermediate = os.path.join(processing_dir, f"{rootname}_raw.mrc")
 
+    extra = ""
+    if old_edge:
+        extra += " -oldedge"
+    if read_xcorr:
+        extra += " -readxcorr"
+
     blend_cmd = (
         f"blendmont -imin {stk_file} -plin {plin_file} "
         f"-imout {intermediate} "
         f"-roo {os.path.join(processing_dir, rootname)} "
-        f"-al {plout_file} -adj -shift"
+        f"-al {plout_file} -adj -shift{extra}"
     )
     result_blend = subprocess.run(
         blend_cmd,
@@ -302,7 +327,7 @@ def _blend_tilt_worker(args):
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
      normalize_averages_to_center, normalize_frames_to_center,
-     log_dir, snap_shifts_to_grid)
+     log_dir, snap_shifts_to_grid, frame_edge_reuse)
 
     ``log_dir`` is the directory where one log file per IMOD command is
     written, named ``{ts}_{tilt}_{command}.log``. Pass None to disable.
@@ -311,6 +336,15 @@ def _blend_tilt_worker(args):
     shifts read from the mdocs are snapped to a uniform grid before being
     written to the .plin file. blendmont requires uniform spacing, but
     SerialEM mdocs can be 1–2 px off; default True.
+
+    ``frame_edge_reuse`` (str, one of :data:`FRAME_EDGE_REUSE_CHOICES`)
+    controls how much of the averages' blendmont solution the per-frame
+    blends reuse. ``'none'`` recomputes each frame independently;
+    ``'edges'`` copies the averages' ``.xef``/``.yef`` edge functions to
+    each frame's root and runs the frame with ``-oldedge``; ``'edges-xcorr'``
+    additionally copies the ``.ecd`` and runs with ``-oldedge -readxcorr``.
+    If an expected averages edge file is missing, that frame falls back to
+    ``'none'`` with a warning rather than aborting.
 
     Returns
     -------
@@ -326,7 +360,7 @@ def _blend_tilt_worker(args):
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
      normalize_averages_to_center, normalize_frames_to_center,
-     log_dir, snap_shifts_to_grid) = args
+     log_dir, snap_shifts_to_grid, frame_edge_reuse) = args
 
     shifts_list = []
     image_list  = []
@@ -381,6 +415,12 @@ def _blend_tilt_worker(args):
 
     frame_stack_out = None
     if blend_frames:
+        # Root of the averages' edge-function files (written by the averages
+        # blendmont above via its -roo argument). Frames optionally reuse them.
+        avg_edge_root = os.path.join(processing_averages_dir,
+                                     f"{ts}_{tilt_angle}_blended")
+        fallback_frames = []   # frames that fell back to computing from scratch
+
         frame_output_list = []
         for frame_i in range(num_frames):
             # Per-frame shifts are identical to the averages shifts (already
@@ -416,12 +456,64 @@ def _blend_tilt_worker(args):
                                       frame_stack, processing_frames_dir,
                                       log_path=_log(f'frame{frame_i}_newstack'))
             commands.append(ns_cmd)
+
+            # Optionally reuse the averages' blendmont solution. Copy the
+            # relevant edge files from the averages root to this frame's root
+            # so processing/blending_frames/ stays self-contained and the
+            # averages solution is left untouched as the reference. If any
+            # expected file is missing, warn and fall back to computing this
+            # frame from scratch.
+            frame_old_edge = False
+            frame_read_xcorr = False
+            if frame_edge_reuse != 'none':
+                frame_edge_root = os.path.join(
+                    processing_frames_dir,
+                    f"{ts}_{tilt_angle}_frame{frame_i}_blended")
+                exts = ['.xef', '.yef']
+                if frame_edge_reuse == 'edges-xcorr':
+                    exts.append('.ecd')
+                missing = [e for e in exts
+                           if not os.path.exists(avg_edge_root + e)]
+                if missing:
+                    print(f"  [WARNING] {ts} {tilt_angle} frame{frame_i}: "
+                          f"missing averages edge file(s) "
+                          f"{[avg_edge_root + e for e in missing]} for "
+                          f"frame_edge_reuse='{frame_edge_reuse}'; computing "
+                          f"this frame from scratch.")
+                    fallback_frames.append(frame_i)
+                else:
+                    for e in exts:
+                        src = avg_edge_root + e
+                        dst = frame_edge_root + e
+                        shutil.copy2(src, dst)
+                        commands.append(f'cp -f "{src}" "{dst}"')
+                    frame_old_edge = True
+                    frame_read_xcorr = (frame_edge_reuse == 'edges-xcorr')
+
             _, _, bm_cmds = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
                                            frame_blended, processing_frames_dir,
                                            blend_log_path=_log(f'frame{frame_i}_blendmont'),
-                                           clip_log_path=_log(f'frame{frame_i}_clip'))
+                                           clip_log_path=_log(f'frame{frame_i}_clip'),
+                                           old_edge=frame_old_edge,
+                                           read_xcorr=frame_read_xcorr)
             commands.extend(bm_cmds)
             frame_output_list.append(os.path.abspath(frame_blended))
+
+        # Record which reuse mode was actually applied this tilt (and any
+        # per-frame fallback) to the log dir rather than the terminal, so a
+        # test run can be audited without flooding the console.
+        reuse_log = _log('frame_edge_reuse')
+        if reuse_log is not None:
+            os.makedirs(os.path.dirname(reuse_log), exist_ok=True)
+            if fallback_frames:
+                msg = (f"{ts} {tilt_angle}: frame_edge_reuse="
+                       f"'{frame_edge_reuse}' (frames {fallback_frames} fell "
+                       f"back to 'none': missing averages edge files)\n")
+            else:
+                msg = (f"{ts} {tilt_angle}: "
+                       f"frame_edge_reuse='{frame_edge_reuse}'\n")
+            with open(reuse_log, 'w') as f:
+                f.write(msg)
 
         frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
         _, ns_cmd = imod_newstack(frame_output_list, 0, frame_stack_out, processing_frames_dir,
@@ -447,7 +539,8 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         normalize_frames_to_center=False,
                         num_workers=1, show_progress=True, tqdm_position=0,
                         sh_files_dir=None, log_dir=None,
-                        snap_shifts_to_grid=True):
+                        snap_shifts_to_grid=True,
+                        frame_edge_reuse='none'):
     """Blend all tiles for one tilt-series.
 
     Parameters
@@ -484,7 +577,24 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
         the .plin file. SerialEM can write shifts that are 1–2 px off the
         regular grid (e.g. 3682 and 7365 instead of 3682 and 7364), and
         blendmont refuses to run on non-uniform spacings.
+    frame_edge_reuse : str
+        One of ``'none'`` (default), ``'edges'``, or ``'edges-xcorr'``.
+        Controls how much of the averages' blendmont solution the per-frame
+        blends reuse. ``'none'`` recomputes each frame independently (current
+        behaviour). ``'edges'`` copies the averages' ``.xef``/``.yef`` edge
+        functions to each frame's root and runs blendmont with ``-oldedge``.
+        ``'edges-xcorr'`` additionally copies the ``.ecd`` and runs with
+        ``-oldedge -readxcorr``, so frames inherit the average's geometry
+        exactly. A missing averages edge file makes that frame fall back to
+        ``'none'`` with a warning rather than aborting the run. Only relevant
+        when ``blend_frames`` is True.
     """
+    if frame_edge_reuse not in FRAME_EDGE_REUSE_CHOICES:
+        raise ValueError(
+            f"frame_edge_reuse must be one of {FRAME_EDGE_REUSE_CHOICES}, "
+            f"got {frame_edge_reuse!r}"
+        )
+
     if sh_files_dir is None:
         sh_files_dir = os.path.join(
             os.path.dirname(os.path.abspath(processing_averages_dir)),
@@ -536,7 +646,7 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
          output_averages_dir, output_frames_dir,
          blend_size, blend_frames, num_frames,
          normalize_averages_to_center, normalize_frames_to_center,
-         log_dir, snap_shifts_to_grid)
+         log_dir, snap_shifts_to_grid, frame_edge_reuse)
         for tilt_i in range(num_tilts)
     ]
 
@@ -646,10 +756,18 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
               help=('Snap PixelShiftFromCenter values to a uniform grid '
                     'before writing the .plin file. blendmont requires '
                     'uniform spacing; SerialEM mdocs can be 1–2 px off.'))
+@click.option('--frame-edge-reuse',
+              type=click.Choice(FRAME_EDGE_REUSE_CHOICES),
+              default='none', show_default=True,
+              help=('How much of the averages\' blendmont solution the '
+                    'per-frame blends reuse. "none" recomputes each frame '
+                    'independently; "edges" reuses the averages\' .xef/.yef '
+                    'edge functions (-oldedge); "edges-xcorr" additionally '
+                    'reuses the .ecd cross-correlations (-oldedge -readxcorr).'))
 def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
          blend_size, blend_frames, num_frames,
          normalize_averages_to_center, normalize_frames_to_center, ts_filter,
-         log_dir, sh_files_dir, snap_shifts_to_grid):
+         log_dir, sh_files_dir, snap_shifts_to_grid, frame_edge_reuse):
     """Blend 3×3 montage tile images into a single giant tilt-series."""
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -698,6 +816,7 @@ def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
             sh_files_dir=sh_files_dir,
             log_dir=log_dir,
             snap_shifts_to_grid=snap_shifts_to_grid,
+            frame_edge_reuse=frame_edge_reuse,
         )
 
     print("\nDone.")

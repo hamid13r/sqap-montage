@@ -98,6 +98,12 @@ DEFAULT_CONFIG = {
         # SerialEM mdocs are sometimes 1–2 px off (e.g. 3682 and 7365 instead
         # of 3682 and 7364); blendmont rejects non-uniform spacings.
         "snap_shifts_to_grid":   True,
+        # How much of the averages' blendmont solution the per-frame blends
+        # reuse: "none" recomputes every frame independently (current default);
+        # "edges" reuses the averages' .xef/.yef edge functions (-oldedge);
+        # "edges-xcorr" additionally reuses the .ecd cross-correlations
+        # (-oldedge -readxcorr) so frames inherit the average's geometry exactly.
+        "frame_edge_reuse":      "none",
     },
 
     # ── Step 3: remove_gaps ──────────────────────────────────────────────────
@@ -286,6 +292,7 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
     log_dir      = c.get("log_dir")      or None
     sh_files_dir = c.get("sh_files_dir") or None
     snap_shifts_to_grid = bool(c.get("snap_shifts_to_grid", True))
+    frame_edge_reuse = c.get("frame_edge_reuse", "none")
 
     if dry_run:
         logger.info("[DRY RUN] blend step:")
@@ -335,6 +342,7 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
             sh_files_dir=sh_files_dir,
             log_dir=log_dir,
             snap_shifts_to_grid=snap_shifts_to_grid,
+            frame_edge_reuse=frame_edge_reuse,
         )
 
     logger.info(f"✓ blend completed in {time.time() - t0:.1f}s")

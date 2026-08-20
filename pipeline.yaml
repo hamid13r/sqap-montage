@@ -109,6 +109,20 @@ blend:
   normalize_averages_to_center: false
   normalize_frames_to_center: false
 
+  # How much of the averages' blendmont solution the per-frame blends reuse.
+  # By default each frame recomputes its own edge functions and cross-
+  # correlation displacements from scratch — slow, and frames can drift onto
+  # slightly different edge alignments than the average. Set this to reuse the
+  # averages' solution instead:
+  #   none        — recompute every frame independently (current behaviour)
+  #   edges       — reuse the averages' .xef/.yef edge functions (-oldedge)
+  #   edges-xcorr — additionally reuse the .ecd cross-correlations
+  #                 (-oldedge -readxcorr); frames inherit the average's
+  #                 geometry exactly (maximum consistency, biggest speedup)
+  # A missing averages edge file makes that frame fall back to recomputing it.
+  # Only relevant when blend_frames: true.
+  frame_edge_reuse: none
+
   # Process only these tilt-series names (leave empty [] to process all)
   # Example: ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
   ts_filter: []
