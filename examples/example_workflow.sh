@@ -6,7 +6,7 @@
 # pointing at a pipeline.yaml config file.
 #
 # Usage:
-#   cd /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
+#   cd /path/to/data/
 #   bash /path/to/sqap-montage/examples/example_workflow.sh
 #
 # The script looks for pipeline.yaml in the current directory by default.

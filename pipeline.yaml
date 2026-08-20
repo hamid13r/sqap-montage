@@ -13,7 +13,7 @@
 
 # Root directory where your data lives.
 # All relative paths below are resolved from here.
-data_dir: /data1/users/Krios_Data/HRR/HRR036_1_TEM_250220
+data_dir: /path/to/data/
 
 # =============================================================================
 # Global options

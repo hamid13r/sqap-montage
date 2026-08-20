@@ -48,7 +48,7 @@ except ImportError:
 DEFAULT_CONFIG = {
     # Working directory — all relative paths are resolved from here.
     # Set to "." to use whatever directory you run the script from.
-    "data_dir": ".",
+    "data_dir": "/path/to/data/",
 
     # Which steps to run (set any to false to skip)
     "steps": {
