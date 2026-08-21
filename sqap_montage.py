@@ -138,7 +138,6 @@ def crop(config):
     crop_y          = c.get('crop_y',         3840)
     filter_window   = c.get('filter_window',  200)
     mask_threshold  = c.get('mask_threshold', 0.5)
-    trim            = c.get('trim',           50)
 
     output_averages_dir = os.path.join(output_dir, 'averages')
     output_frames_dir   = os.path.join(output_dir, 'frames')
@@ -163,7 +162,7 @@ def crop(config):
         task_args = [
             (image_file, output_averages_dir, processing_dir, output_frames_dir,
              frames_dir, crop_frames, averages_suffix,
-             filter_window, mask_threshold, trim, crop_x, crop_y)
+             filter_window, mask_threshold, crop_x, crop_y)
             for image_file in image_files
         ]
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
@@ -179,7 +178,7 @@ def crop(config):
             x0, x1, y0, y1 = crop_average(
                 image_file, output_averages_dir, processing_dir,
                 filter_size=filter_window, mask_threshold=mask_threshold,
-                trim=trim, crop_x=crop_x, crop_y=crop_y,
+                crop_x=crop_x, crop_y=crop_y,
             )
             if crop_frames:
                 crop_frames_for_image(image_file, frames_dir, output_frames_dir, x0, x1, y0, y1,
@@ -615,7 +614,6 @@ crop:
   # Detection parameters — usually don't need changing
   filter_window:  200               # moving-average filter width
   mask_threshold: 0.5               # fraction of peak → illuminated region
-  trim:           50                # pixels to shave inside the detected edge
 
 # =============================================================================
 # Step 2: blend — stitch tiles into one tilt-series per angle
