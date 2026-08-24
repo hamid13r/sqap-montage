@@ -613,7 +613,7 @@ crop:
 
   # Detection parameters — usually don't need changing
   filter_window:  200               # moving-average filter width
-  mask_threshold: 0.5               # fraction of peak → illuminated region
+  mask_threshold: 0.5               # fraction between profile min/max → illuminated region
 
 # =============================================================================
 # Step 2: blend — stitch tiles into one tilt-series per angle

@@ -93,6 +93,12 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
     spill past an image edge it is translated back inside the image (not
     truncated), and ``shifted`` is set on the returned :class:`CropBounds`.
 
+    ``mask_threshold`` is a fraction of each profile's own range (min..max),
+    not of its absolute peak — motion-corrected averages carry a large
+    constant dose background, so the illuminated region is often under 1%
+    brighter than the dark border, and a peak-relative threshold would never
+    exclude anything.
+
     Returns
     -------
     CropBounds
@@ -122,19 +128,34 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
             "Image has no positive signal — cannot detect aperture boundaries."
         )
 
-    kernel = np.ones(filter_size) / filter_size
-    x_profile = np.convolve(col_sum / col_max, kernel, mode='same')
-    y_profile = np.convolve(row_sum / row_max, kernel, mode='same')
+    def smooth(profile, width):
+        # Edge-replicate before convolving instead of relying on 'same' mode's
+        # implicit zero-padding, which pulls the first/last width/2 samples of
+        # the moving average toward zero regardless of the real signal there
+        # and corrupts exactly the boundary region this function is trying to
+        # locate.
+        pad = width // 2
+        padded = np.pad(profile, pad, mode='edge')
+        return np.convolve(padded, np.ones(width) / width, mode='valid')[:profile.size]
 
-    xp_max = x_profile.max()
-    yp_max = y_profile.max()
-    if xp_max <= 0 or yp_max <= 0:
-        raise ValueError(
-            "Smoothed intensity profile is non-positive — check input image."
-        )
+    x_profile = smooth(col_sum, filter_size)
+    y_profile = smooth(row_sum, filter_size)
 
-    x_lit = np.where((x_profile / xp_max) > mask_threshold)[0]
-    y_lit = np.where((y_profile / yp_max) > mask_threshold)[0]
+    # Threshold relative to each profile's own dynamic range (min..max), not
+    # its absolute peak. Motion-corrected averages carry a large constant dose
+    # background — the illuminated aperture can be less than 1% brighter than
+    # the dark border — so peak-relative thresholding (profile/peak >
+    # mask_threshold) is satisfied everywhere and "detection" silently
+    # degenerates to the full frame every time.
+    def lit_extent(profile):
+        lo, hi = profile.min(), profile.max()
+        if hi <= lo:
+            return np.empty(0, dtype=int)
+        thr = lo + mask_threshold * (hi - lo)
+        return np.where(profile > thr)[0]
+
+    x_lit = lit_extent(x_profile)
+    y_lit = lit_extent(y_profile)
 
     if x_lit.size == 0 or y_lit.size == 0:
         raise ValueError(
@@ -354,7 +375,8 @@ def _crop_image_worker(args):
 @click.option('--filter-window',    default=200,  show_default=True,
               help='Moving-average filter width for intensity profile smoothing.')
 @click.option('--mask-threshold',   default=0.5,  show_default=True,
-              help='Fraction of peak intensity defining the illuminated region.')
+              help='Fraction between each profile\'s min and max intensity '
+                   'defining the illuminated region.')
 @click.option('--crop-x',           default=3840, show_default=True,
               help='Final crop width in pixels.')
 @click.option('--crop-y',           default=3840, show_default=True,

@@ -76,6 +76,42 @@ def test_off_center_fits():
 
 
 # ---------------------------------------------------------------------------
+# 2b. Low-contrast aperture on a large constant background
+# ---------------------------------------------------------------------------
+# Motion-corrected averages carry a huge constant dose background; the
+# illuminated aperture can be under 1% brighter than the dark border. A
+# threshold relative to the profile's *absolute peak* is satisfied almost
+# everywhere in that regime, so "detection" silently degenerates to the full
+# frame and every crop centers on the sensor's geometric center instead of the
+# true (off-center) aperture — a systematic shift that survives no matter how
+# well the windowing/translation math (tested above) works.
+
+def make_low_contrast_field(cx, cy, ap_w, ap_h, background=1e6, contrast=0.005,
+                             width=WIDTH, height=HEIGHT):
+    img = np.full((height, width), background, dtype=np.float64)
+    x0, x1 = int(cx - ap_w / 2), int(cx + ap_w / 2)
+    y0, y1 = int(cy - ap_h / 2), int(cy + ap_h / 2)
+    img[y0:y1, x0:x1] = background * (1 + contrast)
+    return img
+
+
+def test_low_contrast_aperture_is_not_lost_to_full_frame():
+    # Aperture offset from the geometric center by (+300, -200) px, only
+    # 0.5% brighter than the background — comparable to real data.
+    true_cx, true_cy = WIDTH / 2 + 300, HEIGHT / 2 - 200
+    img = make_low_contrast_field(true_cx, true_cy, 3000, 3000)
+    b = detect_crop_boundaries(img, filter_size=FS, crop_x=CROP, crop_y=CROP)
+
+    assert _size(b) == (CROP, CROP)
+    # Must land near the true (off-center) aperture, not the frame's
+    # geometric center (WIDTH/2, HEIGHT/2) — the degenerate old behaviour.
+    assert abs(b.center_x - true_cx) < 50
+    assert abs(b.center_y - true_cy) < 50
+    assert abs(b.center_x - WIDTH / 2) > 100
+    assert abs(b.center_y - HEIGHT / 2) > 100
+
+
+# ---------------------------------------------------------------------------
 # 3. Aperture near the bottom edge — y_start would go negative (the real bug)
 # ---------------------------------------------------------------------------
 
