@@ -67,7 +67,6 @@ DEFAULT_CONFIG = {
         "crop_y":          3840,
         "filter_window":   200,
         "mask_threshold":  0.5,
-        "trim":            50,
         "crop_frames":     True,
     },
 
@@ -257,7 +256,6 @@ def run_crop(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
             image_file, output_averages, processing_dir,
             filter_size=c["filter_window"],
             mask_threshold=c["mask_threshold"],
-            trim=c["trim"],
             crop_x=c["crop_x"],
             crop_y=c["crop_y"],
         )
