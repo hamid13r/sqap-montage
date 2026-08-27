@@ -318,8 +318,16 @@ fill:
 
 
   ### Importing Alingment into WarpTools and Reconstruction of Tomograms
+  Importing etomo alignment back into WarpTools and reconstructing the tomograms using the following command:
+  ```bash
+  WarpTools ts_import_alignments --settings warp_tiltseries.settings --alignments warp_tiltseries/tiltstack --alignment_angpix 6.348
+  ```
 
+  RReconstruction of the tomograms at bin 10 using the following command:
+  ```bash
+  WarpTools ts_reconstruct --settings warp_tiltseries.settings --angpix 10.58 --perdevice 1 --dont_invert 
+  ```
 
-  ### Particles Picking using crYOLO
+  ![Preview of the Warp generated Tomogeam](media/VLP3x3_p03_ts_002_blended_frames_10.58Apx.gif)
 
-
+  The shadows of the edges are only visible outside of the tomogram volume. 
