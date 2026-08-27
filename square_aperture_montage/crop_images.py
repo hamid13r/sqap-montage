@@ -26,11 +26,32 @@ Run ``sam-crop --help`` for all options.
 import glob
 import os
 import subprocess
+from typing import NamedTuple
 
 import click
 import mrcfile
 import numpy as np
 from tqdm import tqdm
+
+
+class CropBounds(NamedTuple):
+    """Result of :func:`detect_crop_boundaries`.
+
+    The first four fields are the crop window actually used for slicing; the
+    remainder are diagnostics written to the boundary QC file so a systematic
+    crop offset is visible at a glance without re-running detection.
+    """
+    x_start: int
+    x_end: int
+    y_start: int
+    y_end: int
+    x_min: int          # detected illumination extent (left / right columns)
+    x_max: int
+    y_min: int          # detected illumination extent (top / bottom rows)
+    y_max: int
+    center_x: float     # illumination center the window was placed on
+    center_y: float
+    shifted: bool       # True when the window was translated to fit the image
 
 
 # ---------------------------------------------------------------------------
@@ -63,21 +84,33 @@ def tif_to_mrc(tif_path: str, mrc_path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
-                            trim=50, crop_x=3840, crop_y=3840):
-    """Detect crop boundaries for a 2-D MRC image array.
+                            crop_x=3840, crop_y=3840):
+    """Detect a crop_x × crop_y window centered on the illuminated aperture.
 
     Uses moving-average intensity profiles to find the edges of the illuminated
-    area, trims extra fringe pixels, then returns a centred crop of crop_x × crop_y.
+    area, then returns a ``crop_x × crop_y`` window centered on that area. The
+    output is *always* exactly ``crop_x × crop_y``: if the centered window would
+    spill past an image edge it is translated back inside the image (not
+    truncated), and ``shifted`` is set on the returned :class:`CropBounds`.
+
+    ``mask_threshold`` is a fraction of each profile's own range (min..max),
+    not of its absolute peak — motion-corrected averages carry a large
+    constant dose background, so the illuminated region is often under 1%
+    brighter than the dark border, and a peak-relative threshold would never
+    exclude anything.
 
     Returns
     -------
-    tuple of (x_start, x_end, y_start, y_end)
+    CropBounds
+        Crop window plus detection diagnostics.
 
     Raises
     ------
     ValueError
-        If the image has no positive signal, or no region exceeds
-        ``mask_threshold`` (no aperture detected).
+        If the image has no positive signal, no region exceeds
+        ``mask_threshold`` (no aperture detected), or the requested crop is
+        larger than the image (a crop that does not fit is a hard error, not
+        silently undersized — blendmont requires uniform piece sizes).
     """
     # Cast to float64 once. MRC averages are often int16/float16; summing a
     # 4096-wide row in the native dtype overflows and poisons the profile
@@ -95,19 +128,34 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
             "Image has no positive signal — cannot detect aperture boundaries."
         )
 
-    kernel = np.ones(filter_size) / filter_size
-    x_profile = np.convolve(col_sum / col_max, kernel, mode='same')
-    y_profile = np.convolve(row_sum / row_max, kernel, mode='same')
+    def smooth(profile, width):
+        # Edge-replicate before convolving instead of relying on 'same' mode's
+        # implicit zero-padding, which pulls the first/last width/2 samples of
+        # the moving average toward zero regardless of the real signal there
+        # and corrupts exactly the boundary region this function is trying to
+        # locate.
+        pad = width // 2
+        padded = np.pad(profile, pad, mode='edge')
+        return np.convolve(padded, np.ones(width) / width, mode='valid')[:profile.size]
 
-    xp_max = x_profile.max()
-    yp_max = y_profile.max()
-    if xp_max <= 0 or yp_max <= 0:
-        raise ValueError(
-            "Smoothed intensity profile is non-positive — check input image."
-        )
+    x_profile = smooth(col_sum, filter_size)
+    y_profile = smooth(row_sum, filter_size)
 
-    x_lit = np.where((x_profile / xp_max) > mask_threshold)[0]
-    y_lit = np.where((y_profile / yp_max) > mask_threshold)[0]
+    # Threshold relative to each profile's own dynamic range (min..max), not
+    # its absolute peak. Motion-corrected averages carry a large constant dose
+    # background — the illuminated aperture can be less than 1% brighter than
+    # the dark border — so peak-relative thresholding (profile/peak >
+    # mask_threshold) is satisfied everywhere and "detection" silently
+    # degenerates to the full frame every time.
+    def lit_extent(profile):
+        lo, hi = profile.min(), profile.max()
+        if hi <= lo:
+            return np.empty(0, dtype=int)
+        thr = lo + mask_threshold * (hi - lo)
+        return np.where(profile > thr)[0]
+
+    x_lit = lit_extent(x_profile)
+    y_lit = lit_extent(y_profile)
 
     if x_lit.size == 0 or y_lit.size == 0:
         raise ValueError(
@@ -115,32 +163,67 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
             "Try lowering --mask-threshold or check the input image."
         )
 
-    center_x = (x_lit[0] + trim + x_lit[-1] - trim) // 2
-    center_y = (y_lit[0] + trim + y_lit[-1] - trim) // 2
+    # Detected illumination extent.
+    x_min, x_max = int(x_lit[0]), int(x_lit[-1])
+    y_min, y_max = int(y_lit[0]), int(y_lit[-1])
 
-    x_start = int(center_x - crop_x // 2)
-    x_end   = int(center_x + crop_x // 2)
-    y_start = int(center_y - crop_y // 2)
-    y_end   = int(center_y + crop_y // 2)
-
-    # Clamp to image extent. When the detected aperture sits close to an
-    # edge, the requested crop_x/crop_y can spill outside the array — without
-    # clamping the downstream slice would silently produce a smaller-than-
-    # expected crop or, with negative starts, wrap from the far edge.
     height, width = img.shape[-2:]
-    x_start_c = max(0, x_start)
-    x_end_c   = min(int(width),  x_end)
-    y_start_c = max(0, y_start)
-    y_end_c   = min(int(height), y_end)
-    if (x_start_c, x_end_c, y_start_c, y_end_c) != (x_start, x_end, y_start, y_end):
+    height, width = int(height), int(width)
+
+    # A crop larger than the image can never be produced at the requested size.
+    # Fail loudly rather than emit an undersized tile — downstream blendmont
+    # requires every piece to be exactly the same size.
+    if crop_x > width or crop_y > height:
+        raise ValueError(
+            f"Requested crop {crop_x}×{crop_y} does not fit inside image "
+            f"{width}×{height}. Reduce --crop-x / --crop-y."
+        )
+
+    # Center of the illuminated area. Keep as float and round once, so a
+    # half-pixel center does not bias the window toward lower x/y.
+    center_x = (x_min + x_max) / 2
+    center_y = (y_min + y_max) / 2
+
+    # Cut a crop_x × crop_y window centered on that point. Derive each end from
+    # start + size (not center + size/2) so the window is exactly crop_x/crop_y
+    # wide even for odd crop sizes.
+    x_start = int(round(center_x - crop_x / 2))
+    x_end   = x_start + crop_x
+    y_start = int(round(center_y - crop_y / 2))
+    y_end   = y_start + crop_y
+
+    # If the window spills past an edge, translate it back inside the image
+    # rather than truncating it. The output must always be exactly
+    # crop_x × crop_y; only its position changes.
+    ideal_x_start, ideal_y_start = x_start, y_start
+    shifted = False
+    if x_start < 0:
+        x_start, x_end = 0, crop_x
+        shifted = True
+    elif x_end > width:
+        x_start, x_end = width - crop_x, width
+        shifted = True
+    if y_start < 0:
+        y_start, y_end = 0, crop_y
+        shifted = True
+    elif y_end > height:
+        y_start, y_end = height - crop_y, height
+        shifted = True
+
+    if shifted:
+        dx = x_start - ideal_x_start
+        dy = y_start - ideal_y_start
         print(
-            f"  [WARNING] crop bounds clamped to image extent: "
-            f"x[{x_start}→{x_start_c}, {x_end}→{x_end_c}] "
-            f"y[{y_start}→{y_start_c}, {y_end}→{y_end_c}] "
+            f"  [WARNING] crop window translated by (dx={dx:+d}, dy={dy:+d}) px "
+            f"to stay inside the image: illumination center "
+            f"({center_x:.1f}, {center_y:.1f}) is no longer centered in the "
+            f"{crop_x}×{crop_y} crop  x[{x_start}:{x_end}] y[{y_start}:{y_end}] "
             f"(image {width}×{height})"
         )
 
-    return x_start_c, x_end_c, y_start_c, y_end_c
+    return CropBounds(x_start, x_end, y_start, y_end,
+                      x_min, x_max, y_min, y_max,
+                      center_x, center_y, shifted)
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +231,7 @@ def detect_crop_boundaries(mrc_image, filter_size=200, mask_threshold=0.5,
 # ---------------------------------------------------------------------------
 
 def crop_average(image_path, output_averages_dir, processing_dir,
-                 filter_size=200, mask_threshold=0.5, trim=50,
+                 filter_size=200, mask_threshold=0.5,
                  crop_x=3840, crop_y=3840):
     """Crop one motion-corrected average MRC and save boundary coordinates."""
     os.makedirs(output_averages_dir, exist_ok=True)
@@ -161,24 +244,27 @@ def crop_average(image_path, output_averages_dir, processing_dir,
         mrc_image = mrc.data.copy()
 
     try:
-        x_start, x_end, y_start, y_end = detect_crop_boundaries(
-            mrc_image, filter_size, mask_threshold, trim, crop_x, crop_y
+        b = detect_crop_boundaries(
+            mrc_image, filter_size, mask_threshold, crop_x, crop_y
         )
     except ValueError as e:
         # Attach the offending file path so parallel workers produce a
         # message you can actually act on.
         raise ValueError(f"{image_path}: {e}") from e
 
-    cropped = mrc_image[y_start:y_end, x_start:x_end]
+    cropped = mrc_image[b.y_start:b.y_end, b.x_start:b.x_end]
     with mrcfile.new(os.path.join(output_averages_dir, image_name), overwrite=True) as mrc_out:
         mrc_out.set_data(cropped)
 
     boundary_file = os.path.join(processing_dir, f"{stem}_crop_boundaries.txt")
     with open(boundary_file, 'w') as f:
-        f.write("x_start,x_end,y_start,y_end\n")
-        f.write(f"{x_start},{x_end},{y_start},{y_end}\n")
+        f.write("x_start,x_end,y_start,y_end,x_min,x_max,y_min,y_max,"
+                "center_x,center_y,shifted\n")
+        f.write(f"{b.x_start},{b.x_end},{b.y_start},{b.y_end},"
+                f"{b.x_min},{b.x_max},{b.y_min},{b.y_max},"
+                f"{b.center_x},{b.center_y},{b.shifted}\n")
 
-    return x_start, x_end, y_start, y_end
+    return b.x_start, b.x_end, b.y_start, b.y_end
 
 
 def crop_frames_for_image(image_path, frames_dir, output_frames_dir,
@@ -256,16 +342,16 @@ def _crop_image_worker(args):
     ``args`` is a tuple matching the call in ``sqap_montage.py``:
     (image_file, output_averages_dir, processing_dir, output_frames_dir,
      frames_dir, crop_frames, averages_suffix,
-     filter_window, mask_threshold, trim, crop_x, crop_y)
+     filter_window, mask_threshold, crop_x, crop_y)
     """
     (image_file, output_averages_dir, processing_dir, output_frames_dir,
      frames_dir, crop_frames, averages_suffix,
-     filter_window, mask_threshold, trim, crop_x, crop_y) = args
+     filter_window, mask_threshold, crop_x, crop_y) = args
 
     x0, x1, y0, y1 = crop_average(
         image_file, output_averages_dir, processing_dir,
         filter_size=filter_window, mask_threshold=mask_threshold,
-        trim=trim, crop_x=crop_x, crop_y=crop_y,
+        crop_x=crop_x, crop_y=crop_y,
     )
     if crop_frames:
         crop_frames_for_image(
@@ -289,9 +375,8 @@ def _crop_image_worker(args):
 @click.option('--filter-window',    default=200,  show_default=True,
               help='Moving-average filter width for intensity profile smoothing.')
 @click.option('--mask-threshold',   default=0.5,  show_default=True,
-              help='Fraction of peak intensity defining the illuminated region.')
-@click.option('--trim',             default=50,   show_default=True,
-              help='Pixels to trim inside the detected boundary edge.')
+              help='Fraction between each profile\'s min and max intensity '
+                   'defining the illuminated region.')
 @click.option('--crop-x',           default=3840, show_default=True,
               help='Final crop width in pixels.')
 @click.option('--crop-y',           default=3840, show_default=True,
@@ -304,7 +389,7 @@ def _crop_image_worker(args):
               help='Suffix on average filenames absent from frame filenames '
                    '(e.g. "_avg"). Stripped when looking up the matching frame.')
 def main(input_dir, output_dir, processing_dir, filter_window, mask_threshold,
-         trim, crop_x, crop_y, crop_frames, frames_dir, averages_suffix):
+         crop_x, crop_y, crop_frames, frames_dir, averages_suffix):
     """Crop the dark border outside the square aperture from tile images."""
     output_averages_dir = os.path.join(output_dir, 'averages')
     output_frames_dir   = os.path.join(output_dir, 'frames')
@@ -329,7 +414,7 @@ def main(input_dir, output_dir, processing_dir, filter_window, mask_threshold,
         x_start, x_end, y_start, y_end = crop_average(
             image_file, output_averages_dir, processing_dir,
             filter_size=filter_window, mask_threshold=mask_threshold,
-            trim=trim, crop_x=crop_x, crop_y=crop_y,
+            crop_x=crop_x, crop_y=crop_y,
         )
         if crop_frames:
             crop_frames_for_image(image_file, frames_dir, output_frames_dir,
