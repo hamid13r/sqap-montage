@@ -89,51 +89,8 @@ sqap-montage make-mdoc --config pipeline.yaml
 
 ---
 
-## Configuration
-
-`pipeline.yaml` controls every parameter. The key sections are:
-
-```yaml
-data_dir: /path/to/your/dataset   # all relative paths are resolved from here
-
-crop:
-  input_dir:   frames/averages    # motion-corrected average MRCs
-  crop_x:      3840               # final tile size (pixels)
-  crop_y:      3840
-
-blend:
-  mdoc_dir:    mdocs              # per-tile SerialEM .mrc.mdoc files
-  blend_size:  11664              # output image edge length after stitching
-  num_frames:  4                  # raw frames per exposure
-
-fill:
-  gpus: "0"                       # GPU IDs, or "cpu"
-
-make_mdoc:
-  dose_per_tilt: 3.0              # e-/Å² per tilt
-```
-
-See the inline comments in `pipeline.yaml` for all options.
-
----
-
-## Directory layout after a full run
-
-```
-<data_dir>/
-  mdocs/                   input: per-tile SerialEM .mrc.mdoc files
-  frames/averages/         input: motion-corrected average MRCs
-  frames/                  input: raw per-exposure frame stacks
-  cropped/averages/        step 1 output
-  cropped/frames/
-  blended/averages/        step 2 output (blended averages + mdocs)
-  blended/frames/
-  blended/frames_filled/   step 3 output (gap-filled frames)
-  blended_mdocs/           step 4 output (combined .mrc.mdoc per tilt-series)
-  processing/              intermediate files (safe to delete after pipeline)
-```
-
----
+## Step-by-step walk-through
+For a detailed walk-through of the pipeline, see [walk-through.md](walkthrough/walk-through.md).
 
 ## License
 
