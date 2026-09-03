@@ -118,6 +118,46 @@ blend:
   preview_binning: 24          # bin factor passed to newstack -bin
   preview_dir:     blended/previews
 
+  # ---------------------------------------------------------------------------
+  # blendmont intensity corrections
+  # ---------------------------------------------------------------------------
+  # These map directly onto blendmont's INTENSITY CORRECTION OPTIONS and are
+  # appended to the generated blendmont command (averages and per-frame passes
+  # get identical corrections). They are independent of normalize_*_to_center
+  # above — you can use either, both, or neither. All defaults below emit no
+  # extra flags, so the command is unchanged.
+  #
+  # NOTE: changing sum_for_gradient / other_gradient_file / flatfield_file
+  # invalidates cached edge functions; sqap-montage deletes the stale
+  # .ecd/.xef/.yef files for the affected rootname automatically.
+  intensity:
+    # -intensity / -FixIntensityFromEdges
+    #   0 = off (default), 1 = solve scaling factors from overlap-zone
+    #   differences, 2 = also fit and remove a planar gradient first.
+    fix_from_edges: 0
+
+    # -base / -BaseIntensityForScaling
+    #   Value subtracted before scaling and added back after. null = omit the
+    #   flag (blendmont default). Use -32768 if unsigned data are stored as
+    #   signed integers. Only meaningful with fix_from_edges > 0.
+    base: null
+
+    # -sum / -SumPiecesForGradient
+    #   Sum all pieces, run "clip planefit" on the input, and correct every
+    #   piece for the resulting planar gradient. Mutually exclusive with
+    #   other_gradient_file.
+    sum_for_gradient: false
+
+    # -other / -OtherSumGradientFile
+    #   Pre-computed planar gradient file. Mutually exclusive with
+    #   sum_for_gradient. Relative paths resolve from data_dir.
+    other_gradient_file: null
+
+    # -flatfield / -FlatfieldFile
+    #   Flatfield image to scale by, e.g. from "clip flatfield -n 3".
+    #   Relative paths resolve from data_dir.
+    flatfield_file: null
+
 # =============================================================================
 # Step 3: remove_gaps — fill blending-seam artefacts with local texture
 # =============================================================================

@@ -97,6 +97,17 @@ DEFAULT_CONFIG = {
         # SerialEM mdocs are sometimes 1–2 px off (e.g. 3682 and 7365 instead
         # of 3682 and 7364); blendmont rejects non-uniform spacings.
         "snap_shifts_to_grid":   True,
+        # blendmont INTENSITY CORRECTION OPTIONS. Independent of and composable
+        # with normalize_*_to_center above. All defaults are a no-op (no extra
+        # flags emitted). Changing sum/other/flatfield invalidates cached edge
+        # functions — sqap-montage removes stale ones automatically.
+        "intensity": {
+            "fix_from_edges":      0,      # -intensity: 0=off, 1=solve, 2=+gradient
+            "base":                None,   # -base: subtracted before scaling, re-added after
+            "sum_for_gradient":    False,  # -sum: fit planar gradient from summed pieces
+            "other_gradient_file": None,   # -other: pre-computed gradient file (excl. sum)
+            "flatfield_file":      None,   # -flatfield: image to scale by
+        },
     },
 
     # ── Step 3: remove_gaps ──────────────────────────────────────────────────
@@ -268,7 +279,9 @@ def run_crop(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
 
 
 def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
-    from .blend_tiles import discover_tilt_series, process_tilt_series
+    from .blend_tiles import (
+        discover_tilt_series, process_tilt_series, intensity_args_from_config,
+    )
 
     c = cfg["blend"]
 
@@ -284,11 +297,16 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
     log_dir      = c.get("log_dir")      or None
     sh_files_dir = c.get("sh_files_dir") or None
     snap_shifts_to_grid = bool(c.get("snap_shifts_to_grid", True))
+    # main() has already chdir'd into data_dir, so intensity file paths resolve
+    # from the current working directory. Validated once up front.
+    intensity_args = intensity_args_from_config(c.get("intensity", {}), ".")
 
     if dry_run:
         logger.info("[DRY RUN] blend step:")
         for k, v in c.items():
             logger.info(f"  {k}: {v}")
+        logger.info(f"  blendmont intensity flags: "
+                    f"{' '.join(intensity_args) if intensity_args else '(none)'}")
         return True
 
     for d in [out_avg, out_avg_mdoc, proc_avg]:
@@ -333,6 +351,7 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
             sh_files_dir=sh_files_dir,
             log_dir=log_dir,
             snap_shifts_to_grid=snap_shifts_to_grid,
+            intensity_args=intensity_args,
         )
 
     logger.info(f"✓ blend completed in {time.time() - t0:.1f}s")
