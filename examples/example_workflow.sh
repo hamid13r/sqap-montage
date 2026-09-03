@@ -39,6 +39,8 @@ $SQAP crop --config "$CONFIG"
 
 echo ""
 echo "[2/4] Blending tiles..."
+# blendmont intensity corrections are configured in the blend.intensity block
+# of pipeline.yaml, e.g. fix_from_edges: 2 + base: 0. See the README.
 $SQAP blend --config "$CONFIG"
 
 echo ""

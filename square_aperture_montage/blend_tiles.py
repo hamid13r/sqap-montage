@@ -20,7 +20,9 @@ Run ``sam-blend --help`` for all options.
 
 import concurrent.futures
 import glob
+import logging
 import os
+import shlex
 import sys
 from pathlib import Path, PureWindowsPath
 import subprocess
@@ -29,6 +31,123 @@ import click
 import tqdm
 
 from .mdoc_reader import parse_mdoc_file, write_mdoc_file
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# blendmont intensity-correction options
+# ---------------------------------------------------------------------------
+
+def build_intensity_args(fix_from_edges=0, base=None, sum_for_gradient=False,
+                         other_gradient_file=None, flatfield_file=None):
+    """Return the blendmont intensity-correction flags as a list of strings.
+
+    Maps directly onto blendmont's INTENSITY CORRECTION OPTIONS:
+
+    ==================  =========================================
+    Parameter           blendmont flag
+    ==================  =========================================
+    fix_from_edges      -intensity {1,2}   (0 emits nothing)
+    base                -base {value}
+    sum_for_gradient    -sum
+    other_gradient_file -other {path}
+    flatfield_file      -flatfield {path}
+    ==================  =========================================
+
+    Returns ``[]`` when nothing is enabled, so the generated command is
+    byte-for-byte identical to the pre-existing one.
+
+    Flags are emitted in a deterministic order (-intensity, -base, -sum,
+    -other, -flatfield) so tests and the logged .sh files are stable. File
+    paths are quoted with :func:`shlex.quote` because the command is run
+    through ``shell=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``fix_from_edges`` is not one of {0, 1, 2}, or if both
+        ``sum_for_gradient`` and ``other_gradient_file`` are set (blendmont's
+        -sum and -other cannot be combined).
+    """
+    if fix_from_edges not in (0, 1, 2):
+        raise ValueError(
+            f"fix_from_edges must be 0, 1, or 2 (got {fix_from_edges!r})"
+        )
+    if sum_for_gradient and other_gradient_file:
+        raise ValueError(
+            "sum_for_gradient and other_gradient_file are mutually exclusive: "
+            "blendmont's -sum and -other cannot be combined"
+        )
+    if base is not None and fix_from_edges == 0:
+        logger.warning(
+            "intensity base=%s is set but fix_from_edges is 0; -base has no "
+            "effect without -intensity", base
+        )
+
+    args = []
+    if fix_from_edges:
+        args += ["-intensity", str(fix_from_edges)]
+    if base is not None:
+        args += ["-base", f"{float(base):g}"]
+    if sum_for_gradient:
+        args += ["-sum"]
+    if other_gradient_file:
+        args += ["-other", shlex.quote(str(other_gradient_file))]
+    if flatfield_file:
+        args += ["-flatfield", shlex.quote(str(flatfield_file))]
+    return args
+
+
+def intensity_args_from_config(cfg_block, data_dir):
+    """Build blendmont intensity flags from a YAML ``blend.intensity`` block.
+
+    ``cfg_block`` is the ``intensity`` mapping (or None/{} when absent).
+    ``other_gradient_file`` and ``flatfield_file`` are resolved against
+    ``data_dir`` (unless already absolute) and must exist on disk.
+
+    This is where up-front validation happens — call it once before any
+    tilt-series is processed, not per tilt.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a resolved ``other_gradient_file`` / ``flatfield_file`` does not
+        exist (the message names the config key).
+    ValueError
+        Propagated from :func:`build_intensity_args`.
+    """
+    cfg_block = cfg_block or {}
+    # Default is 1 (solve per-piece scaling from the overlap zones) when the
+    # key is absent or null. An explicit 0 still disables it — don't collapse
+    # 0 into the default the way ``x or 1`` would.
+    raw_fix             = cfg_block.get("fix_from_edges", 1)
+    fix_from_edges      = 1 if raw_fix is None else int(raw_fix)
+    base                = cfg_block.get("base", None)
+    sum_for_gradient    = bool(cfg_block.get("sum_for_gradient", False))
+    other_gradient_file = cfg_block.get("other_gradient_file", None)
+    flatfield_file      = cfg_block.get("flatfield_file", None)
+
+    def _resolve_existing(rel, key):
+        if not rel:
+            return None
+        path = rel if os.path.isabs(rel) else os.path.join(data_dir, rel)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"blend.intensity.{key} not found: {path}"
+            )
+        return path
+
+    other_resolved     = _resolve_existing(other_gradient_file, "other_gradient_file")
+    flatfield_resolved = _resolve_existing(flatfield_file,       "flatfield_file")
+
+    return build_intensity_args(
+        fix_from_edges=fix_from_edges,
+        base=base,
+        sum_for_gradient=sum_for_gradient,
+        other_gradient_file=other_resolved,
+        flatfield_file=flatfield_resolved,
+    )
 
 
 def _normalize_tiles_to_center(image_list, shifts_list, processing_dir, prefix,
@@ -232,7 +351,8 @@ def imod_newstack(image_list, frame_num, stack_out, processing_dir, log_path=Non
 
 def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
                    blended_output, processing_dir,
-                   blend_log_path=None, clip_log_path=None):
+                   blend_log_path=None, clip_log_path=None, *,
+                   intensity_args=()):
     """Blend a montage stack and resize with IMOD blendmont + clip.
 
     Parameters
@@ -242,6 +362,14 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         to this file.
     clip_log_path : str or None
         Same as ``blend_log_path`` but for the clip resize step.
+    intensity_args : sequence of str
+        Extra blendmont intensity-correction flags (see
+        :func:`build_intensity_args`) appended after ``-shift``. Empty (the
+        default) reproduces the original command exactly. When non-empty, any
+        cached edge-function files (``*.ecd``/``*.xef``/``*.yef``) for this
+        rootname are deleted first, because changing gradient options
+        invalidates them and blendmont would otherwise silently reuse stale
+        ones.
 
     Returns
     -------
@@ -253,12 +381,30 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
     rootname = Path(blended_output).stem
     intermediate = os.path.join(processing_dir, f"{rootname}_raw.mrc")
 
+    # Changing any intensity/gradient option invalidates cached edge
+    # functions. blendmont writes them to the -roo root and silently reuses
+    # them if present, so remove any stale ones first.
+    if intensity_args:
+        stale = []
+        for ext in ('ecd', 'xef', 'yef'):
+            stale.extend(glob.glob(os.path.join(processing_dir, f"{rootname}*.{ext}")))
+        for f in stale:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        if stale:
+            print(f"  [INFO] intensity options set — removed {len(stale)} cached "
+                  f"edge-function file(s) for {rootname} so blendmont recomputes them")
+
     blend_cmd = (
         f"blendmont -imin {stk_file} -plin {plin_file} "
         f"-imout {intermediate} "
         f"-roo {os.path.join(processing_dir, rootname)} "
         f"-al {plout_file} -adj -shift"
     )
+    if intensity_args:
+        blend_cmd += " " + " ".join(intensity_args)
     result_blend = subprocess.run(
         blend_cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
@@ -302,7 +448,13 @@ def _blend_tilt_worker(args):
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
      normalize_averages_to_center, normalize_frames_to_center,
-     log_dir, snap_shifts_to_grid)
+     log_dir, snap_shifts_to_grid, intensity_args)
+
+    ``intensity_args`` is a tuple/list of blendmont intensity-correction
+    flags (see :func:`build_intensity_args`), appended to both the averages
+    and per-frame blendmont commands. Empty () reproduces the original
+    command. It must stay the *last* element of the tuple — the tuple is
+    pickled for the multiprocessing path.
 
     ``log_dir`` is the directory where one log file per IMOD command is
     written, named ``{ts}_{tilt}_{command}.log``. Pass None to disable.
@@ -326,7 +478,7 @@ def _blend_tilt_worker(args):
      output_averages_dir, output_frames_dir,
      blend_size, blend_frames, num_frames,
      normalize_averages_to_center, normalize_frames_to_center,
-     log_dir, snap_shifts_to_grid) = args
+     log_dir, snap_shifts_to_grid, intensity_args) = args
 
     shifts_list = []
     image_list  = []
@@ -376,7 +528,8 @@ def _blend_tilt_worker(args):
     _, _, bm_cmds = imod_blendmont(stack_file, plin_file, plout_file, blend_size,
                                    blended_out, processing_averages_dir,
                                    blend_log_path=_log('blendmont'),
-                                   clip_log_path=_log('clip'))
+                                   clip_log_path=_log('clip'),
+                                   intensity_args=intensity_args)
     commands.extend(bm_cmds)
 
     frame_stack_out = None
@@ -419,7 +572,8 @@ def _blend_tilt_worker(args):
             _, _, bm_cmds = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
                                            frame_blended, processing_frames_dir,
                                            blend_log_path=_log(f'frame{frame_i}_blendmont'),
-                                           clip_log_path=_log(f'frame{frame_i}_clip'))
+                                           clip_log_path=_log(f'frame{frame_i}_clip'),
+                                           intensity_args=intensity_args)
             commands.extend(bm_cmds)
             frame_output_list.append(os.path.abspath(frame_blended))
 
@@ -447,7 +601,7 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                         normalize_frames_to_center=False,
                         num_workers=1, show_progress=True, tqdm_position=0,
                         sh_files_dir=None, log_dir=None,
-                        snap_shifts_to_grid=True):
+                        snap_shifts_to_grid=True, intensity_args=()):
     """Blend all tiles for one tilt-series.
 
     Parameters
@@ -484,6 +638,12 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
         the .plin file. SerialEM can write shifts that are 1–2 px off the
         regular grid (e.g. 3682 and 7365 instead of 3682 and 7364), and
         blendmont refuses to run on non-uniform spacings.
+    intensity_args : sequence of str
+        blendmont intensity-correction flags (see
+        :func:`build_intensity_args`) applied identically to the averages and
+        per-frame blendmont commands. Empty (default) leaves the command
+        unchanged. These are independent of and composable with the
+        ``normalize_*_to_center`` options above.
     """
     if sh_files_dir is None:
         sh_files_dir = os.path.join(
@@ -536,7 +696,7 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
          output_averages_dir, output_frames_dir,
          blend_size, blend_frames, num_frames,
          normalize_averages_to_center, normalize_frames_to_center,
-         log_dir, snap_shifts_to_grid)
+         log_dir, snap_shifts_to_grid, tuple(intensity_args))
         for tilt_i in range(num_tilts)
     ]
 
@@ -646,11 +806,40 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
               help=('Snap PixelShiftFromCenter values to a uniform grid '
                     'before writing the .plin file. blendmont requires '
                     'uniform spacing; SerialEM mdocs can be 1–2 px off.'))
+@click.option('--intensity', '--fix-intensity-from-edges', 'fix_from_edges',
+              type=int, default=1, show_default=True,
+              help=('blendmont -intensity: 0=off, 1=solve scaling from '
+                    'overlap-zone differences (default), 2=also fit/remove a '
+                    'planar gradient first.'))
+@click.option('--intensity-base', 'intensity_base',
+              type=float, default=None,
+              help=('blendmont -base: value subtracted before scaling and '
+                    'added back after. Only meaningful with --intensity > 0.'))
+@click.option('--sum-for-gradient/--no-sum-for-gradient',
+              default=False, show_default=True,
+              help=('blendmont -sum: sum all pieces, run "clip planefit", and '
+                    'correct every piece for the planar gradient. Mutually '
+                    'exclusive with --other-gradient-file.'))
+@click.option('--other-gradient-file', 'other_gradient_file',
+              type=click.Path(), default=None,
+              help='blendmont -other: pre-computed planar gradient file.')
+@click.option('--flatfield-file', 'flatfield_file',
+              type=click.Path(), default=None,
+              help='blendmont -flatfield: flatfield image to scale by.')
 def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
          blend_size, blend_frames, num_frames,
          normalize_averages_to_center, normalize_frames_to_center, ts_filter,
-         log_dir, sh_files_dir, snap_shifts_to_grid):
+         log_dir, sh_files_dir, snap_shifts_to_grid,
+         fix_from_edges, intensity_base, sum_for_gradient,
+         other_gradient_file, flatfield_file):
     """Blend 3×3 montage tile images into a single giant tilt-series."""
+    intensity_args = build_intensity_args(
+        fix_from_edges=fix_from_edges,
+        base=intensity_base,
+        sum_for_gradient=sum_for_gradient,
+        other_gradient_file=other_gradient_file,
+        flatfield_file=flatfield_file,
+    )
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
     out_avg_mdoc = os.path.join(out_avg, 'mdocs')
@@ -698,6 +887,7 @@ def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
             sh_files_dir=sh_files_dir,
             log_dir=log_dir,
             snap_shifts_to_grid=snap_shifts_to_grid,
+            intensity_args=intensity_args,
         )
 
     print("\nDone.")

@@ -29,7 +29,9 @@ import yaml
 from tqdm import tqdm
 
 from square_aperture_montage.crop_images import crop_average, crop_frames_for_image
-from square_aperture_montage.blend_tiles import discover_tilt_series, process_tilt_series
+from square_aperture_montage.blend_tiles import (
+    discover_tilt_series, process_tilt_series, intensity_args_from_config,
+)
 from square_aperture_montage.mdoc_reader import parse_mdoc_file, write_mdoc_file
 
 
@@ -272,6 +274,14 @@ def blend(config):
     # the .plin file. blendmont requires uniform spacing; SerialEM mdocs
     # can write values that are 1–2 px off. Default True.
     snap_shifts_to_grid = bool(b.get('snap_shifts_to_grid', True))
+    # Center-tile histogram normalization (independent of blendmont's own
+    # intensity options below). These were previously read from pipeline.yaml
+    # but never passed through here.
+    normalize_averages_to_center = bool(b.get('normalize_averages_to_center', False))
+    normalize_frames_to_center   = bool(b.get('normalize_frames_to_center', False))
+    # blendmont intensity-correction flags, validated once up front (before any
+    # tilt-series runs) so a bad path or option fails immediately.
+    intensity_args = intensity_args_from_config(b.get('intensity', {}), data_dir)
 
     out_avg      = os.path.join(output_dir, 'averages')
     out_frm      = os.path.join(output_dir, 'frames')
@@ -319,12 +329,15 @@ def blend(config):
                     blend_size=blend_size,
                     blend_frames=blend_frames,
                     num_frames=num_frames,
+                    normalize_averages_to_center=normalize_averages_to_center,
+                    normalize_frames_to_center=normalize_frames_to_center,
                     num_workers=num_workers,
                     show_progress=True,
                     tqdm_position=1,
                     sh_files_dir=sh_files_dir,
                     log_dir=log_dir,
                     snap_shifts_to_grid=snap_shifts_to_grid,
+                    intensity_args=intensity_args,
                 )
             except Exception as exc:
                 click.echo(f"  [ERROR] {ts}: {exc}", err=True)
@@ -652,6 +665,46 @@ blend:
   # nearest integer multiple of the per-axis step before being written to
   # the .plin file. Set to false to feed blendmont the raw mdoc values.
   snap_shifts_to_grid: true
+
+  # ---------------------------------------------------------------------------
+  # blendmont intensity corrections
+  # ---------------------------------------------------------------------------
+  # These map directly onto blendmont's INTENSITY CORRECTION OPTIONS and are
+  # appended to the generated blendmont command (averages and per-frame passes
+  # get identical corrections). They are independent of normalize_*_to_center
+  # above — you can use either, both, or neither. fix_from_edges defaults to 1
+  # (solve per-piece scaling); set it to 0 to disable intensity correction.
+  #
+  # NOTE: changing sum_for_gradient / other_gradient_file / flatfield_file
+  # invalidates cached edge functions; sqap-montage deletes the stale
+  # .ecd/.xef/.yef files for the affected rootname automatically.
+  intensity:
+    # -intensity / -FixIntensityFromEdges
+    #   0 = off, 1 = solve scaling factors from overlap-zone differences
+    #   (default), 2 = also fit and remove a planar gradient first.
+    fix_from_edges: 1
+
+    # -base / -BaseIntensityForScaling
+    #   Value subtracted before scaling and added back after. null = omit the
+    #   flag (blendmont default). Use -32768 if unsigned data are stored as
+    #   signed integers. Only meaningful with fix_from_edges > 0.
+    base: null
+
+    # -sum / -SumPiecesForGradient
+    #   Sum all pieces, run "clip planefit" on the input, and correct every
+    #   piece for the resulting planar gradient. Mutually exclusive with
+    #   other_gradient_file.
+    sum_for_gradient: false
+
+    # -other / -OtherSumGradientFile
+    #   Pre-computed planar gradient file. Mutually exclusive with
+    #   sum_for_gradient. Relative paths resolve from data_dir.
+    other_gradient_file: null
+
+    # -flatfield / -FlatfieldFile
+    #   Flatfield image to scale by, e.g. from "clip flatfield -n 3".
+    #   Relative paths resolve from data_dir.
+    flatfield_file: null
 
 # =============================================================================
 # Step 3: fill — fill blending-seam artefacts with local texture

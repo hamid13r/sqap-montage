@@ -89,6 +89,48 @@ sqap-montage make-mdoc --config pipeline.yaml
 
 ---
 
+## blendmont intensity corrections (blend step)
+
+The `blend` step can pass IMOD `blendmont`'s intensity-correction options
+through from the config. Set them under `blend.intensity` in `pipeline.yaml`.
+`fix_from_edges` **defaults to `1`** (solve per-piece scaling from the overlap
+zones); set it to `0` to disable intensity correction entirely. The remaining
+options default off. The flags are applied identically to the averages pass and
+the per-frame passes.
+
+| Config key | blendmont flag | Effect |
+|---|---|---|
+| `fix_from_edges` | `-intensity {1,2}` | Solve per-piece scaling factors from overlap-zone differences (`1`, the default); `2` also fits and removes a planar gradient first. `0` = off. |
+| `base` | `-base {value}` | Value subtracted before scaling and added back after. Use `-32768` if unsigned data are stored as signed ints. Only meaningful with `fix_from_edges > 0`. |
+| `sum_for_gradient` | `-sum` | Sum all pieces, run `clip planefit`, and correct every piece for the planar gradient. Mutually exclusive with `other_gradient_file`. |
+| `other_gradient_file` | `-other {path}` | Use a pre-computed planar gradient file. Mutually exclusive with `sum_for_gradient`. |
+| `flatfield_file` | `-flatfield {path}` | Flatfield image to scale by, e.g. from `clip flatfield -n 3`. |
+
+Relative paths for `other_gradient_file` / `flatfield_file` resolve from
+`data_dir` and are checked to exist once, up front, before any tilt-series is
+processed.
+
+These are **independent of and composable with** `normalize_averages_to_center`
+/ `normalize_frames_to_center` — you can use either, both, or neither. The
+center-tile normalization rewrites the tile MRCs that go into the stack;
+blendmont's intensity options then act on that stack.
+
+> **Note:** changing `sum_for_gradient` / `other_gradient_file` / `flatfield_file`
+> invalidates blendmont's cached edge functions. sqap-montage deletes the stale
+> `.ecd` / `.xef` / `.yef` files for the affected rootname automatically so they
+> are recomputed.
+
+Worked example — solve scaling *and* remove a planar gradient, with a base of 0:
+
+```yaml
+blend:
+  intensity:
+    fix_from_edges: 2
+    base: 0
+```
+
+---
+
 ## Step-by-step walk-through
 For a detailed walk-through of the pipeline, see [walk-through.md](walkthrough/walk-through.md).
 
