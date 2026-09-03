@@ -118,7 +118,11 @@ def intensity_args_from_config(cfg_block, data_dir):
         Propagated from :func:`build_intensity_args`.
     """
     cfg_block = cfg_block or {}
-    fix_from_edges      = int(cfg_block.get("fix_from_edges", 0) or 0)
+    # Default is 1 (solve per-piece scaling from the overlap zones) when the
+    # key is absent or null. An explicit 0 still disables it — don't collapse
+    # 0 into the default the way ``x or 1`` would.
+    raw_fix             = cfg_block.get("fix_from_edges", 1)
+    fix_from_edges      = 1 if raw_fix is None else int(raw_fix)
     base                = cfg_block.get("base", None)
     sum_for_gradient    = bool(cfg_block.get("sum_for_gradient", False))
     other_gradient_file = cfg_block.get("other_gradient_file", None)
@@ -803,10 +807,10 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                     'before writing the .plin file. blendmont requires '
                     'uniform spacing; SerialEM mdocs can be 1–2 px off.'))
 @click.option('--intensity', '--fix-intensity-from-edges', 'fix_from_edges',
-              type=int, default=0, show_default=True,
+              type=int, default=1, show_default=True,
               help=('blendmont -intensity: 0=off, 1=solve scaling from '
-                    'overlap-zone differences, 2=also fit/remove a planar '
-                    'gradient first.'))
+                    'overlap-zone differences (default), 2=also fit/remove a '
+                    'planar gradient first.'))
 @click.option('--intensity-base', 'intensity_base',
               type=float, default=None,
               help=('blendmont -base: value subtracted before scaling and '

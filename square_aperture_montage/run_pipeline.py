@@ -98,11 +98,12 @@ DEFAULT_CONFIG = {
         # of 3682 and 7364); blendmont rejects non-uniform spacings.
         "snap_shifts_to_grid":   True,
         # blendmont INTENSITY CORRECTION OPTIONS. Independent of and composable
-        # with normalize_*_to_center above. All defaults are a no-op (no extra
-        # flags emitted). Changing sum/other/flatfield invalidates cached edge
-        # functions — sqap-montage removes stale ones automatically.
+        # with normalize_*_to_center above. fix_from_edges defaults to 1 (solve
+        # per-piece scaling); set it to 0 to disable. Changing sum/other/
+        # flatfield invalidates cached edge functions — sqap-montage removes
+        # stale ones automatically.
         "intensity": {
-            "fix_from_edges":      0,      # -intensity: 0=off, 1=solve, 2=+gradient
+            "fix_from_edges":      1,      # -intensity: 0=off, 1=solve (default), 2=+gradient
             "base":                None,   # -base: subtracted before scaling, re-added after
             "sum_for_gradient":    False,  # -sum: fit planar gradient from summed pieces
             "other_gradient_file": None,   # -other: pre-computed gradient file (excl. sum)

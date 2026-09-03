@@ -151,9 +151,15 @@ def test_config_missing_flatfield_raises(tmp_path):
     assert "flatfield_file" in str(exc.value)
 
 
-def test_empty_config_returns_empty():
-    assert intensity_args_from_config({}, ".") == []
-    assert intensity_args_from_config(None, ".") == []
+def test_empty_config_defaults_to_intensity_one():
+    # fix_from_edges defaults to 1 when the block is absent or null.
+    assert intensity_args_from_config({}, ".") == ["-intensity", "1"]
+    assert intensity_args_from_config(None, ".") == ["-intensity", "1"]
+
+
+def test_explicit_zero_disables_intensity():
+    # An explicit 0 must still turn it off (not collapse into the default).
+    assert intensity_args_from_config({"fix_from_edges": 0}, ".") == []
 
 
 # ---------------------------------------------------------------------------

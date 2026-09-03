@@ -672,17 +672,17 @@ blend:
   # These map directly onto blendmont's INTENSITY CORRECTION OPTIONS and are
   # appended to the generated blendmont command (averages and per-frame passes
   # get identical corrections). They are independent of normalize_*_to_center
-  # above — you can use either, both, or neither. All defaults below emit no
-  # extra flags, so the command is unchanged.
+  # above — you can use either, both, or neither. fix_from_edges defaults to 1
+  # (solve per-piece scaling); set it to 0 to disable intensity correction.
   #
   # NOTE: changing sum_for_gradient / other_gradient_file / flatfield_file
   # invalidates cached edge functions; sqap-montage deletes the stale
   # .ecd/.xef/.yef files for the affected rootname automatically.
   intensity:
     # -intensity / -FixIntensityFromEdges
-    #   0 = off (default), 1 = solve scaling factors from overlap-zone
-    #   differences, 2 = also fit and remove a planar gradient first.
-    fix_from_edges: 0
+    #   0 = off, 1 = solve scaling factors from overlap-zone differences
+    #   (default), 2 = also fit and remove a planar gradient first.
+    fix_from_edges: 1
 
     # -base / -BaseIntensityForScaling
     #   Value subtracted before scaling and added back after. null = omit the
