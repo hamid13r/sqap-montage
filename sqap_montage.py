@@ -33,6 +33,21 @@ from square_aperture_montage.blend_tiles import (
     discover_tilt_series, process_tilt_series, intensity_args_from_config,
 )
 from square_aperture_montage.mdoc_reader import parse_mdoc_file, write_mdoc_file
+from square_aperture_montage.ts_filter import filter_names, filter_paths
+
+
+def _resolve_ts_filter(cfg: dict, section: dict) -> list:
+    """Effective tilt-series filter for a step.
+
+    ``ts_filter`` is a global (top-level) config option. The step-level
+    ``ts_filter`` (historically under ``blend`` / ``make_mdoc``) is honoured as
+    a fallback when the global one is unset, so older configs keep working.
+    """
+    from square_aperture_montage.ts_filter import normalize_patterns
+    global_pats = normalize_patterns(cfg.get('ts_filter'))
+    if global_pats:
+        return global_pats
+    return normalize_patterns(section.get('ts_filter'))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,6 +171,14 @@ def crop(config):
         click.echo(f"No .mrc files found in '{input_dir}'. Exiting.")
         return
 
+    ts_filter = _resolve_ts_filter(cfg, c)
+    if ts_filter:
+        image_files = filter_paths(image_files, ts_filter)
+        if not image_files:
+            click.echo(f"No images matched ts_filter {ts_filter}. Exiting.")
+            return
+        click.echo(f"  ts_filter {ts_filter}: {len(image_files)} image(s) match.")
+
     click.echo(f"Found {len(image_files)} image(s) to process.")
 
     if num_workers > 1:
@@ -258,7 +281,7 @@ def blend(config):
     blend_size     = b.get('blend_size',   11664)
     blend_frames   = b.get('blend_frames', True)
     num_frames     = b.get('num_frames',   4)
-    ts_filter      = b.get('ts_filter',    [])
+    ts_filter      = _resolve_ts_filter(cfg, b)
     preview        = b.get('preview',         True)
     preview_bin    = int(b.get('preview_binning', 24))
     preview_dir    = resolve(data_dir, b.get('preview_dir', 'blended/previews'))
@@ -302,7 +325,7 @@ def blend(config):
         sys.exit(1)
 
     if ts_filter:
-        ts_list = [ts for ts in ts_list if ts in ts_filter]
+        ts_list = filter_names(ts_list, ts_filter)
         if not ts_list:
             click.echo("No tilt-series matched ts_filter in config. Exiting.")
             sys.exit(1)
@@ -412,6 +435,14 @@ def fill(config):
         click.echo(f"No .mrc files found in '{input_dir}'. Exiting.")
         sys.exit(1)
 
+    ts_filter = _resolve_ts_filter(cfg, f)
+    if ts_filter:
+        image_list = filter_paths(image_list, ts_filter)
+        if not image_list:
+            click.echo(f"No images matched ts_filter {ts_filter}. Exiting.")
+            sys.exit(1)
+        click.echo(f"  ts_filter {ts_filter}: {len(image_list)} image(s) match.")
+
     click.echo(f"Found {len(image_list)} images to process.")
     if seam_rows or seam_cols:
         click.echo(f"  Mode: manual seams — rows: {seam_rows}  cols: {seam_cols}")
@@ -483,7 +514,7 @@ def make_mdoc(config):
     output_dir    = resolve(data_dir, m.get('output_dir',    'blended_mdocs'))
     dose_per_tilt = float(m.get('dose_per_tilt', 3.0))
     keys_to_copy  = m.get('keys_to_copy', DEFAULT_KEYS_TO_COPY)
-    ts_filter     = m.get('ts_filter', [])
+    ts_filter     = _resolve_ts_filter(cfg, m)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -493,7 +524,7 @@ def make_mdoc(config):
         sys.exit(1)
 
     if ts_filter:
-        ts_list = [ts for ts in ts_list if ts in ts_filter]
+        ts_list = filter_names(ts_list, ts_filter)
         if not ts_list:
             click.echo("No tilt-series matched ts_filter in config. Exiting.")
             sys.exit(1)
@@ -607,6 +638,15 @@ keep_intermediate: false
 # Set to e.g. 4 or 8 to process multiple tiles / tilt-series in parallel.
 num_workers: 1
 
+# Global tilt-series filter — applies to ALL steps (crop, blend, fill,
+# make-mdoc). Each entry is a shell-style glob (wildcards *, ?, [..] allowed).
+# Leave empty [] to process everything. For the file-based steps (crop, fill)
+# a pattern matches when it appears anywhere in the filename; for blend and
+# make-mdoc it matches the discovered tilt-series name.
+#   exact:     ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
+#   wildcard:  ts_filter: ["VLP3x3_p01_ts_*"]
+ts_filter: []
+
 # =============================================================================
 # Step 1: crop — remove blank aperture borders from each tile image
 # =============================================================================
@@ -642,9 +682,7 @@ blend:
   blend_frames:   true              # also blend per-frame stacks
   num_frames:     4                 # raw frames per exposure (used with blend_frames)
 
-  # Process only these tilt-series (leave empty [] for all)
-  # ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
-  ts_filter: []
+  # Tilt-series selection is the global `ts_filter` above (applies to all steps).
 
   # Preview stack — one binned MRC per tilt-series sorted by tilt angle
   preview:         true
@@ -751,8 +789,7 @@ make_mdoc:
 
   dose_per_tilt: 3.0                # electron dose per tilt (e-/Å²)
 
-  # Leave empty [] to process all tilt-series
-  ts_filter: []
+  # Tilt-series selection is the global `ts_filter` above (applies to all steps).
 
   # Keys copied from the _0_0 corner tile into the blended mdoc.
   # Uncomment and edit to override the defaults.

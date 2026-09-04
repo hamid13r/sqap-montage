@@ -89,6 +89,32 @@ sqap-montage make-mdoc --config pipeline.yaml
 
 ---
 
+## Selecting tilt-series (`ts_filter`)
+
+`ts_filter` is a **global**, top-level config option that applies to **every**
+step (crop, blend, fill, make-mdoc). It is a list of shell-style glob patterns
+(`*`, `?`, `[..]` supported); leave it empty (`[]`) to process everything.
+
+```yaml
+# top level of pipeline.yaml
+ts_filter: ["VLP3x3_p01_ts_*"]     # or exact: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
+```
+
+Matching differs by step because they operate on different units:
+
+- **blend** and **make-mdoc** match the discovered **tilt-series name** (e.g.
+  `VLP3x3_p04_ts_004`). A plain name is an exact match (backward compatible);
+  add wildcards for ranges.
+- **crop** and **fill** operate on individual `.mrc` files whose names *embed*
+  the tilt-series name behind an acquisition timestamp, so a pattern matches
+  when it appears **anywhere** in the filename.
+
+The same `ts_filter` therefore selects a consistent set of tilt-series across
+all four steps. (For backward compatibility a step-level `ts_filter` under
+`blend`/`make_mdoc` is still honoured when the global one is unset.)
+
+---
+
 ## blendmont intensity corrections (blend step)
 
 The `blend` step can pass IMOD `blendmont`'s intensity-correction options

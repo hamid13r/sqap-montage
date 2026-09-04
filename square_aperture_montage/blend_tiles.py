@@ -31,6 +31,7 @@ import click
 import tqdm
 
 from .mdoc_reader import parse_mdoc_file, write_mdoc_file
+from .ts_filter import filter_names
 
 logger = logging.getLogger(__name__)
 
@@ -793,7 +794,8 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
                     'standard deviation match the center tile before blending. '
                     'Only applies when --blend-frames is set.'))
 @click.option('--ts', 'ts_filter', default=None, multiple=True,
-              help='Process only these tilt-series names (repeatable). Defaults to all.')
+              help=('Process only tilt-series matching these names/globs '
+                    '(repeatable, wildcards * ? [..] allowed). Defaults to all.'))
 @click.option('--log-dir', default=None, show_default=True,
               help=('Directory for per-IMOD-command log files '
                     '({ts}_{tilt}_{command}.log). Defaults to '
@@ -859,7 +861,7 @@ def main(mdoc_dir, averages_dir, frames_dir, output_dir, processing_dir,
         sys.exit(1)
 
     if ts_filter:
-        ts_list = [ts for ts in ts_list if ts in ts_filter]
+        ts_list = filter_names(ts_list, ts_filter)
         if not ts_list:
             print("No tilt-series matched the --ts filter. Exiting.")
             sys.exit(1)

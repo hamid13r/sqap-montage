@@ -35,10 +35,20 @@ from pathlib import Path
 
 import click
 
+from .ts_filter import filter_names, filter_paths, normalize_patterns
+
 try:
     import yaml
 except ImportError:
     yaml = None
+
+
+def _resolve_ts_filter(cfg: dict, section: dict) -> list:
+    """Effective tilt-series filter for a step: global first, step-level fallback."""
+    global_pats = normalize_patterns(cfg.get("ts_filter"))
+    if global_pats:
+        return global_pats
+    return normalize_patterns(section.get("ts_filter"))
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +66,13 @@ DEFAULT_CONFIG = {
         "blend": True,
         "fill":  True,
     },
+
+    # Global tilt-series filter — applies to ALL steps. Each entry is a
+    # shell-style glob (wildcards *, ?, [..] allowed). Empty [] = everything.
+    # File-based steps (crop, fill) match the pattern anywhere in the filename;
+    # blend matches the discovered tilt-series name.
+    #   ts_filter: ["VLP3x3_p01_ts_*"]
+    "ts_filter": [],
 
     # ── Step 1: crop_images ──────────────────────────────────────────────────
     "crop": {
@@ -84,9 +101,7 @@ DEFAULT_CONFIG = {
         "normalize_averages_to_center": False,
         # Rescale off-center frame tiles to match center tile histogram before blending
         "normalize_frames_to_center":   False,
-        # List specific tilt-series names to process, or leave empty for all:
-        # ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
-        "ts_filter":             [],
+        # Tilt-series selection is the global top-level `ts_filter` (all steps).
         # Optional overrides — both default to siblings of processing_dir.
         # log_dir holds one log file per IMOD command (newstack / blendmont
         # / clip) named {ts}_{tilt}_{command}.log with full stdout + stderr.
@@ -260,6 +275,14 @@ def run_crop(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
         logger.warning(f"No .mrc files found in {input_dir}")
         return True
 
+    ts_filter = _resolve_ts_filter(cfg, c)
+    if ts_filter:
+        image_files = filter_paths(image_files, ts_filter)
+        if not image_files:
+            logger.warning(f"No images matched ts_filter {ts_filter}")
+            return True
+        logger.info(f"ts_filter {ts_filter}: {len(image_files)} image(s) match")
+
     logger.info(f"Cropping {len(image_files)} images from {input_dir}")
     t0 = time.time()
 
@@ -321,11 +344,11 @@ def run_blend(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
         logger.error(f"No tilt-series found in {c['mdoc_dir']}")
         return False
 
-    ts_filter = c.get("ts_filter") or []
+    ts_filter = _resolve_ts_filter(cfg, c)
     if ts_filter:
-        ts_list = [ts for ts in ts_list if ts in ts_filter]
+        ts_list = filter_names(ts_list, ts_filter)
         if not ts_list:
-            logger.error("No tilt-series matched ts_filter")
+            logger.error(f"No tilt-series matched ts_filter {ts_filter}")
             return False
 
     logger.info(f"Blending {len(ts_list)} tilt-series")
@@ -386,6 +409,14 @@ def run_fill(cfg: dict, logger: logging.Logger, dry_run: bool) -> bool:
     if not image_list:
         logger.warning(f"No .mrc files found in {c['input_dir']}")
         return True
+
+    ts_filter = _resolve_ts_filter(cfg, c)
+    if ts_filter:
+        image_list = filter_paths(image_list, ts_filter)
+        if not image_list:
+            logger.warning(f"No images matched ts_filter {ts_filter}")
+            return True
+        logger.info(f"ts_filter {ts_filter}: {len(image_list)} image(s) match")
 
     logger.info(f"Filling gaps in {len(image_list)} images")
     t0    = time.time()

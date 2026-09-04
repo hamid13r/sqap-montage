@@ -31,6 +31,15 @@ keep_intermediate: false
 # Set to e.g. 4 or 8 to process multiple tiles / tilt-series in parallel.
 num_workers: 1
 
+# Global tilt-series filter — applies to ALL steps (crop, blend, fill,
+# make-mdoc). Each entry is a shell-style glob (wildcards *, ?, [..] allowed).
+# Leave empty [] to process everything. For the file-based steps (crop, fill)
+# a pattern matches when it appears anywhere in the filename; for blend and
+# make-mdoc it matches the discovered tilt-series name.
+#   exact:     ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
+#   wildcard:  ts_filter: ["VLP3x3_p01_ts_*"]
+ts_filter: []
+
 # Which steps to run. Set any to false to skip.
 steps:
   crop:  true
@@ -97,6 +106,8 @@ blend:
   # Number of raw frames per exposure (used when blend_frames: true)
   num_frames: 4
 
+  # Tilt-series selection is the global `ts_filter` above (applies to all steps).
+
   # Normalize off-center tile histograms to match the center tile (true/false).
   # Each off-center tile is linearly rescaled so its mean and standard deviation
   # match those of the center (_0_0) tile before blending. This reduces intensity
@@ -107,10 +118,6 @@ blend:
   #                               (only relevant when blend_frames: true).
   normalize_averages_to_center: false
   normalize_frames_to_center: false
-
-  # Process only these tilt-series names (leave empty [] to process all)
-  # Example: ts_filter: [VLP3x3_p01_ts_002, VLP3x3_p01_ts_003]
-  ts_filter: []
 
   # Preview stack — one binned MRC per tilt-series sorted by tilt angle.
   # Useful for a quick sanity check before running downstream processing.
@@ -227,8 +234,7 @@ make_mdoc:
   # ExposureDose = (tilt_index + 0.5) * dose_per_tilt
   dose_per_tilt: 3.0
 
-  # Process only these tilt-series (leave empty [] to process all)
-  ts_filter: []
+  # Tilt-series selection is the global `ts_filter` above (applies to all steps).
 
   # Keys to copy from the _0_0 corner tile into the blended mdoc.
   # Remove any key you don't want; leave commented out to use the defaults.
