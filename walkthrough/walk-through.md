@@ -185,12 +185,47 @@ blend:
   #                 geometry exactly (maximum consistency, biggest speedup)
   # Only relevant when blend_frames: true.
   frame_edge_reuse: none
+
+    # NOTE: changing sum_for_gradient / other_gradient_file / flatfield_file
+  # invalidates cached edge functions; sqap-montage deletes the stale
+  # .ecd/.xef/.yef files for the affected rootname automatically.
+  intensity:
+    # -intensity / -FixIntensityFromEdges
+    #   0 = off, 1 = solve scaling factors from overlap-zone differences
+    #   (default), 2 = also fit and remove a planar gradient first.
+    fix_from_edges: 1
+
+    # -base / -BaseIntensityForScaling
+    #   Value subtracted before scaling and added back after. null = omit the
+    #   flag (blendmont default). Use -32768 if unsigned data are stored as
+    #   signed integers. Only meaningful with fix_from_edges > 0.
+    base: null
+
+    # -sum / -SumPiecesForGradient
+    #   Sum all pieces, run "clip planefit" on the input, and correct every
+    #   piece for the resulting planar gradient. Mutually exclusive with
+    #   other_gradient_file.
+    sum_for_gradient: false
+
+    # -other / -OtherSumGradientFile
+    #   Pre-computed planar gradient file. Mutually exclusive with
+    #   sum_for_gradient. Relative paths resolve from data_dir.
+    other_gradient_file: null
+
+    # -flatfield / -FlatfieldFile
+    #   Flatfield image to scale by, e.g. from "clip flatfield -n 3".
+    #   Relative paths resolve from data_dir.
+    flatfield_file: null
   ```
 
   The `frame_edge_reuse` option is useful for speeding up the blending of the frames. The `edges` option will reuse the edge functions from the averages, while the `edges-xcorr` option will also reuse the cross-correlations. The `none` option will recompute everything from scratch for each frame, which is the default behaviour. This option is experimental and we have not tested the speedup and the quality of the montaged frames using this option.
   This step also creates previews of the montaged tilt-series in the blended/previews directory. The previews are binned by 24 (or the value chosen by the user) and are useful for quickly checking the quality of the montaging step. The previews are named {tilt-series}_preview.mrc and can be opened in IMOD or any other MRC viewer.
 
   ![Preview of the montaged tilt-series](media/VLP3x3_p03_ts_002_preview.gif)
+
+  What we have lately added to the code is using blendmont's intensity correction.
+
+  ![Preview of the montaged tilt-series, intensity corrected](media/VLP3x3_p03_ts_002_preview_intensity.gif)
 
   ## Filling the gaps (experimental)
   We are also working on a step to fill some of the gaps and remove the seams that might arise from blending. This step is still experimental and is not yet included in the main workflow. The idea is to look from large lines with a very low variance and replace them with randomly selected pixel values from the same neighborhood. This step is still under development and will be included in the future versions of the workflow. 
