@@ -279,9 +279,13 @@ def _snap_shifts_to_uniform(shifts_list):
     return snapped
 
 
-def _write_command_log(log_path, cmd, result):
+def _write_command_log(log_path, cmd, result, note=None):
     """Write one IMOD command's cmd string, return code, stdout, and stderr
     to ``log_path``.
+
+    ``note`` is an optional free-text line (e.g. the edge-function cleanup
+    message) recorded above the return code, so per-command housekeeping is
+    captured in the log instead of cluttering stdout.
 
     Called once per IMOD invocation when a log directory is configured.
     Silently no-ops if ``log_path`` is None so callers don't need to guard.
@@ -293,6 +297,8 @@ def _write_command_log(log_path, cmd, result):
     stderr = result.stderr.decode(errors='replace') if result.stderr else ''
     with open(log_path, 'w') as f:
         f.write(f"# Command:\n{cmd}\n\n")
+        if note:
+            f.write(f"# Note: {note}\n\n")
         f.write(f"# Return code: {result.returncode}\n\n")
         f.write("# ── stdout ──────────────────────────────────────────────────\n")
         f.write(stdout)
@@ -370,7 +376,8 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         cached edge-function files (``*.ecd``/``*.xef``/``*.yef``) for this
         rootname are deleted first, because changing gradient options
         invalidates them and blendmont would otherwise silently reuse stale
-        ones.
+        ones. The cleanup is recorded in the blendmont command log (not printed
+        to stdout).
 
     Returns
     -------
@@ -384,7 +391,10 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
 
     # Changing any intensity/gradient option invalidates cached edge
     # functions. blendmont writes them to the -roo root and silently reuses
-    # them if present, so remove any stale ones first.
+    # them if present, so remove any stale ones first. The cleanup is recorded
+    # in the blendmont command log (via ``note`` below) rather than printed, so
+    # it doesn't clutter stdout / the progress bar on every tilt.
+    edge_note = None
     if intensity_args:
         stale = []
         for ext in ('ecd', 'xef', 'yef'):
@@ -395,8 +405,9 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
             except OSError:
                 pass
         if stale:
-            print(f"  [INFO] intensity options set — removed {len(stale)} cached "
-                  f"edge-function file(s) for {rootname} so blendmont recomputes them")
+            edge_note = (f"intensity options set — removed {len(stale)} cached "
+                         f"edge-function file(s) for {rootname} so blendmont "
+                         f"recomputes them")
 
     blend_cmd = (
         f"blendmont -imin {stk_file} -plin {plin_file} "
@@ -410,7 +421,7 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
         blend_cmd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True,
     )
-    _write_command_log(blend_log_path, blend_cmd, result_blend)
+    _write_command_log(blend_log_path, blend_cmd, result_blend, note=edge_note)
     if result_blend.returncode != 0:
         print(f"  [WARNING] blendmont failed:\n  {result_blend.stderr.decode().strip()}")
 
