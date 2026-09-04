@@ -381,10 +381,12 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
 
     Returns
     -------
-    tuple of (CompletedProcess, CompletedProcess, list[str])
-        The blendmont result, the clip result, and the two shell command
-        strings (blendmont then clip) for the caller to record in the
-        per-tilt-series sh_files log.
+    tuple of (CompletedProcess, CompletedProcess, list[str], int)
+        The blendmont result, the clip result, the two shell command strings
+        (blendmont then clip) for the caller to record in the per-tilt-series
+        sh_files log, and the number of stale edge-function files removed
+        (0 unless intensity options triggered a cleanup). The caller sums these
+        into a single per-tilt-series summary line.
     """
     rootname = Path(blended_output).stem
     intermediate = os.path.join(processing_dir, f"{rootname}_raw.mrc")
@@ -393,8 +395,10 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
     # functions. blendmont writes them to the -roo root and silently reuses
     # them if present, so remove any stale ones first. The cleanup is recorded
     # in the blendmont command log (via ``note`` below) rather than printed, so
-    # it doesn't clutter stdout / the progress bar on every tilt.
+    # it doesn't clutter stdout / the progress bar on every tilt; the count is
+    # returned so the caller can print one summary line per tilt-series.
     edge_note = None
+    n_removed = 0
     if intensity_args:
         stale = []
         for ext in ('ecd', 'xef', 'yef'):
@@ -404,8 +408,9 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
                 os.remove(f)
             except OSError:
                 pass
+        n_removed = len(stale)
         if stale:
-            edge_note = (f"intensity options set — removed {len(stale)} cached "
+            edge_note = (f"intensity options set — removed {n_removed} cached "
                          f"edge-function file(s) for {rootname} so blendmont "
                          f"recomputes them")
 
@@ -434,7 +439,7 @@ def imod_blendmont(stk_file, plin_file, plout_file, blend_size,
     if result_clip.returncode != 0:
         print(f"  [WARNING] clip failed:\n  {result_clip.stderr.decode().strip()}")
 
-    return result_blend, result_clip, [blend_cmd, clip_cmd]
+    return result_blend, result_clip, [blend_cmd, clip_cmd], n_removed
 
 
 def discover_tilt_series(mdoc_dir):
@@ -479,10 +484,12 @@ def _blend_tilt_worker(args):
     Returns
     -------
     tuple of (tilt_i, tilt_angle, blended_avg_path,
-              blended_frames_path_or_None, commands)
+              blended_frames_path_or_None, commands, edge_removed)
         ``commands`` is a list of the shell command strings that were issued
         for this tilt, in the order they ran. The caller writes them to the
-        per-tilt-series sh_files log.
+        per-tilt-series sh_files log. ``edge_removed`` is the number of stale
+        edge-function files cleared for this tilt (0 unless intensity options
+        are active); the caller sums it into one per-tilt-series summary line.
     """
     (tilt_i, tile_sections,
      ts, cropped_averages_abs, cropped_frames_abs,
@@ -496,6 +503,7 @@ def _blend_tilt_worker(args):
     image_list  = []
     tilt_angle  = tilt_i   # fallback
     commands    = []       # IMOD commands issued for this tilt, in order
+    edge_removed = 0       # stale edge-function files cleared this tilt
 
     for section in tile_sections:
         tilt_angle = section.get('TiltAngle', tilt_i)
@@ -537,12 +545,13 @@ def _blend_tilt_worker(args):
     _, ns_cmd = imod_newstack(image_list, 0, stack_file, processing_averages_dir,
                               log_path=_log('newstack'))
     commands.append(ns_cmd)
-    _, _, bm_cmds = imod_blendmont(stack_file, plin_file, plout_file, blend_size,
-                                   blended_out, processing_averages_dir,
-                                   blend_log_path=_log('blendmont'),
-                                   clip_log_path=_log('clip'),
-                                   intensity_args=intensity_args)
+    _, _, bm_cmds, n_rm = imod_blendmont(stack_file, plin_file, plout_file, blend_size,
+                                         blended_out, processing_averages_dir,
+                                         blend_log_path=_log('blendmont'),
+                                         clip_log_path=_log('clip'),
+                                         intensity_args=intensity_args)
     commands.extend(bm_cmds)
+    edge_removed += n_rm
 
     frame_stack_out = None
     if blend_frames:
@@ -581,12 +590,13 @@ def _blend_tilt_worker(args):
                                       frame_stack, processing_frames_dir,
                                       log_path=_log(f'frame{frame_i}_newstack'))
             commands.append(ns_cmd)
-            _, _, bm_cmds = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
-                                           frame_blended, processing_frames_dir,
-                                           blend_log_path=_log(f'frame{frame_i}_blendmont'),
-                                           clip_log_path=_log(f'frame{frame_i}_clip'),
-                                           intensity_args=intensity_args)
+            _, _, bm_cmds, n_rm = imod_blendmont(frame_stack, frame_plin, frame_plout, blend_size,
+                                                 frame_blended, processing_frames_dir,
+                                                 blend_log_path=_log(f'frame{frame_i}_blendmont'),
+                                                 clip_log_path=_log(f'frame{frame_i}_clip'),
+                                                 intensity_args=intensity_args)
             commands.extend(bm_cmds)
+            edge_removed += n_rm
             frame_output_list.append(os.path.abspath(frame_blended))
 
         frame_stack_out = os.path.join(output_frames_dir, f"{ts}_{tilt_angle}_blended_frames.mrc")
@@ -597,7 +607,7 @@ def _blend_tilt_worker(args):
     return (tilt_i, tilt_angle,
             os.path.abspath(blended_out),
             os.path.abspath(frame_stack_out) if frame_stack_out else None,
-            commands)
+            commands, edge_removed)
 
 
 # ---------------------------------------------------------------------------
@@ -721,26 +731,36 @@ def process_tilt_series(ts, mdoc_dir, cropped_averages_dir, cropped_frames_dir,
         pbar = None
 
     results = {}   # tilt_i → (tilt_angle, blended_avg, blended_frames, commands)
+    edge_removed_total = 0   # stale edge-function files cleared across all tilts
 
     if num_workers > 1:
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_blend_tilt_worker, a): a[0] for a in task_args}
             for future in concurrent.futures.as_completed(futures):
-                tilt_i, tilt_angle, avg_path, frm_path, commands = future.result()
+                tilt_i, tilt_angle, avg_path, frm_path, commands, edge_removed = future.result()
                 results[tilt_i] = (tilt_angle, avg_path, frm_path, commands)
+                edge_removed_total += edge_removed
                 if pbar is not None:
                     pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
                     pbar.update(1)
     else:
         for args in task_args:
-            tilt_i, tilt_angle, avg_path, frm_path, commands = _blend_tilt_worker(args)
+            tilt_i, tilt_angle, avg_path, frm_path, commands, edge_removed = _blend_tilt_worker(args)
             results[tilt_i] = (tilt_angle, avg_path, frm_path, commands)
+            edge_removed_total += edge_removed
             if pbar is not None:
                 pbar.set_postfix(angle=f"{tilt_angle:+.1f}°")
                 pbar.update(1)
 
     if pbar is not None:
         pbar.close()
+
+    # One summary line per tilt-series (not per tilt) so the edge-function
+    # cleanup is visible on stdout without flooding it. Only when intensity
+    # options actually cleared cached edge functions.
+    if intensity_args and edge_removed_total:
+        print(f"  {ts}: intensity correction on — cleared {edge_removed_total} "
+              f"stale edge-function file(s); blendmont recomputed them")
 
     # Write a re-runnable shell script of every IMOD command issued for
     # this tilt-series, ordered by tilt index. Useful both for reproducing

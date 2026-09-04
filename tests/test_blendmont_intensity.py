@@ -21,6 +21,7 @@ from square_aperture_montage.blend_tiles import (
     intensity_args_from_config,
     imod_blendmont,
     process_tilt_series,
+    _blend_tilt_worker,
 )
 import square_aperture_montage.blend_tiles as bt
 
@@ -179,6 +180,38 @@ def test_imod_blendmont_appends_flags(tmp_path, captured_cmds):
     assert blend_cmd.endswith("-shift -intensity 2 -base 0")
     # flags come after -shift, not before
     assert blend_cmd.index("-shift") < blend_cmd.index("-intensity")
+
+
+# ---------------------------------------------------------------------------
+# 7b. The worker reports how many stale edge files it cleared (for the summary)
+# ---------------------------------------------------------------------------
+
+def test_worker_reports_edge_removed_count(tmp_path, captured_cmds):
+    proc_avg = tmp_path / "proc_avg"
+    proc_avg.mkdir()
+    (tmp_path / "out_avg").mkdir()
+    ts = "TSX"
+    # Rootname the averages blendmont will use: {ts}_{tilt_angle}_blended
+    for ext in ("ecd", "xef", "yef"):
+        (proc_avg / f"{ts}_0.0_blended.{ext}").write_text("")
+
+    sections = [
+        {"TiltAngle": 0.0, "PixelShiftFromCenter": [0, 0], "SubFramePath": "a.tif"},
+        {"TiltAngle": 0.0, "PixelShiftFromCenter": [3682, 0], "SubFramePath": "b.tif"},
+    ]
+    args = (
+        0, sections,
+        ts, str(tmp_path), str(tmp_path),
+        str(proc_avg), str(tmp_path / "proc_frm"),
+        str(tmp_path / "out_avg"), str(tmp_path / "out_frm"),
+        11664, False, 0,               # blend_size, blend_frames, num_frames
+        False, False,                  # normalize avgs / frames
+        None, True,                    # log_dir, snap_shifts_to_grid
+        ("-intensity", "1"),           # intensity_args
+    )
+    result = _blend_tilt_worker(args)
+    edge_removed = result[5]
+    assert edge_removed == 3
 
 
 # ---------------------------------------------------------------------------
